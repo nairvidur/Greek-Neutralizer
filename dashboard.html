@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Greeks Neutralizer — Δ·Γ·V Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #06090d; --surface: #0d1117; --surface2: #151b24; --surface3: #1c2433;
+    --border: #21293a; --border-light: #2d3a50;
+    --text: #e6edf3; --text-dim: #8b949e; --text-muted: #545d68;
+    --accent: #58a6ff; --accent-glow: rgba(88,166,255,0.12);
+    --green: #3fb950; --green-glow: rgba(63,185,80,0.12);
+    --red: #f85149; --red-glow: rgba(248,81,73,0.12);
+    --orange: #d29922; --orange-glow: rgba(210,153,34,0.12);
+    --purple: #bc8cff; --purple-glow: rgba(188,140,255,0.12);
+    --cyan: #39d2c0; --cyan-glow: rgba(57,210,192,0.12);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; overflow-x: hidden;
+  }
+  body::before {
+    content:''; position:fixed; top:-40%; left:-20%; width:80%; height:80%;
+    background: radial-gradient(ellipse, rgba(88,166,255,0.04) 0%, transparent 70%);
+    pointer-events:none; z-index:0;
+  }
+  body::after {
+    content:''; position:fixed; bottom:-30%; right:-10%; width:60%; height:70%;
+    background: radial-gradient(ellipse, rgba(188,140,255,0.03) 0%, transparent 70%);
+    pointer-events:none; z-index:0;
+  }
+  .app { position:relative; z-index:1; max-width:960px; margin:0 auto; padding:24px 20px; }
+
+  .header { margin-bottom:24px; }
+  .header-row { display:flex; align-items:center; gap:12px; }
+  .logo {
+    width:38px; height:38px; border-radius:10px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    display:flex; align-items:center; justify-content:center;
+    font-size:20px; font-weight:800; color:#fff;
+    box-shadow: 0 4px 20px rgba(88,166,255,0.2);
+  }
+  .header h1 { font-size:20px; font-weight:800; letter-spacing:-0.5px; }
+  .header .badge {
+    font-size:9px; padding:3px 10px; border-radius:99px;
+    background:var(--accent-glow); color:var(--accent);
+    font-weight:700; text-transform:uppercase; letter-spacing:0.8px;
+  }
+  .header .subtitle { color:var(--text-dim); font-size:13px; margin-top:4px; padding-left:50px; }
+
+  .card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:12px; padding:16px; margin-bottom:12px;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color:var(--border-light); }
+  .card-label {
+    font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:1.2px; margin-bottom:12px;
+  }
+
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .grid-4 { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:10px; }
+
+  .field label {
+    display:block; font-size:9px; text-transform:uppercase;
+    letter-spacing:1px; color:var(--text-muted); font-weight:600; margin-bottom:4px;
+  }
+  .field input, .field select {
+    width:100%; padding:8px 10px; border:1px solid var(--border);
+    border-radius:8px; background:var(--bg); color:var(--text);
+    font-family:'JetBrains Mono',monospace; font-size:13px;
+    outline:none; transition:border-color 0.15s;
+  }
+  .field input:focus, .field select:focus {
+    border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow);
+  }
+  .field select { cursor:pointer; appearance:none; }
+
+  .greeks-row {
+    display:grid; grid-template-columns:repeat(5,1fr); gap:6px;
+    margin-top:10px; padding:10px; background:var(--surface2); border-radius:8px;
+  }
+  .greek-cell { text-align:center; }
+  .greek-cell .symbol { font-size:9px; color:var(--text-muted); margin-bottom:2px; }
+  .greek-cell .value { font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:600; }
+
+  .btn {
+    padding:9px 16px; border-radius:8px; font-size:12px;
+    font-weight:700; cursor:pointer; border:none;
+    transition:all 0.15s; font-family:'DM Sans',sans-serif;
+  }
+  .btn-primary { background:var(--accent); color:#fff; width:100%; }
+  .btn-primary:hover { background:#79b8ff; }
+  .btn-danger {
+    background:transparent; color:var(--red); border:1px solid var(--red);
+    padding:5px 12px; font-size:11px;
+  }
+  .btn-danger:hover { background:var(--red-glow); }
+
+  .tabs {
+    display:flex; gap:2px; background:var(--surface);
+    border-radius:12px; padding:3px; border:1px solid var(--border); margin-bottom:14px;
+  }
+  .tab {
+    flex:1; padding:10px; border-radius:10px; border:none;
+    background:transparent; color:var(--text-muted);
+    font-size:12px; font-weight:700; cursor:pointer;
+    font-family:'DM Sans',sans-serif; transition:all 0.15s;
+  }
+  .tab.active { background:var(--surface2); color:var(--text); box-shadow:0 2px 8px rgba(0,0,0,0.3); }
+
+  .status {
+    display:flex; align-items:center; gap:10px;
+    padding:14px 16px; border-radius:12px; margin-bottom:14px;
+  }
+  .status.ok { background:var(--green-glow); border:1px solid var(--green); }
+  .status.fail { background:var(--red-glow); border:1px solid var(--red); }
+  .status-dot { width:10px; height:10px; border-radius:50%; animation:pulse 2s infinite; }
+  .status.ok .status-dot { background:var(--green); box-shadow:0 0 12px var(--green); }
+  .status.fail .status-dot { background:var(--red); box-shadow:0 0 12px var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+  .status-text { font-size:12px; font-weight:700; }
+  .status.ok .status-text { color:var(--green); }
+  .status.fail .status-text { color:var(--red); }
+
+  .qty-card {
+    padding:16px; background:var(--surface2); border-radius:10px;
+    border:1px solid var(--border); text-align:center;
+  }
+  .qty-card .instrument { font-size:10px; color:var(--text-muted); margin-bottom:8px; }
+  .qty-card .amount { font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:800; line-height:1.2; }
+  .qty-card .action-tag {
+    display:inline-block; margin-top:6px; padding:3px 10px;
+    border-radius:4px; font-size:10px; font-weight:700;
+  }
+
+  .agg-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  .agg-cell { text-align:center; padding:12px 4px; background:var(--surface2); border-radius:10px; }
+  .agg-cell .label { font-size:9px; color:var(--text-muted); margin-bottom:4px; }
+  .agg-cell .val { font-family:'JetBrains Mono',monospace; font-size:16px; font-weight:700; }
+  .agg-cell.neutral { border:1px solid var(--green); }
+  .agg-cell .neutral-badge { font-size:8px; color:var(--green); margin-top:3px; font-weight:700; }
+
+  .info-box {
+    padding:12px 14px; background:var(--surface2); border-radius:8px;
+    font-size:11px; color:var(--text-dim); line-height:1.7; border:1px solid var(--border);
+  }
+
+  .footer {
+    margin-top:16px; padding:14px; background:var(--surface);
+    border-radius:12px; border:1px solid var(--border);
+    font-size:10px; color:var(--text-muted); line-height:1.8;
+  }
+
+  .pos-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .pos-tag { margin-left:10px; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; }
+  .hidden { display:none; }
+
+  .greek-toggles { display:flex; gap:8px; flex-wrap:wrap; }
+  .greek-toggle {
+    display:flex; align-items:center; gap:6px; padding:8px 14px;
+    border-radius:8px; cursor:pointer; border:1px solid var(--border);
+    background:var(--surface); transition:all 0.15s; user-select:none;
+  }
+  .greek-toggle:hover { border-color:var(--border-light); }
+  .greek-toggle.active { border-color:var(--green); background:var(--green-glow); }
+  .greek-toggle .gt-check {
+    width:16px; height:16px; border-radius:4px; border:2px solid var(--border-light);
+    display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:800; transition:all 0.15s;
+  }
+  .greek-toggle.active .gt-check { border-color:var(--green); background:var(--green); color:#fff; }
+  .greek-toggle .gt-label { font-size:12px; font-weight:600; }
+  .greek-toggle .gt-desc { font-size:9px; color:var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="header-row">
+      <div class="logo">Δ</div>
+      <h1>Greeks Neutralizer</h1>
+      <span class="badge">Flexible Hedging</span>
+    </div>
+    <div class="subtitle">Build Greek-neutral portfolios — choose which risks to neutralize</div>
+  </div>
+
+  <div class="card">
+    <div class="grid-2">
+      <div class="field"><label>Spot Price (S)</label><input type="number" id="spot" value="100" step="1"></div>
+      <div class="field"><label>Risk-Free Rate (r)</label><input type="number" id="rate" value="0.05" step="0.005"></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="positions" id="tab-positions">Positions (2)</button>
+    <button class="tab" data-tab="hedges" id="tab-hedges">Hedging (3)</button>
+    <button class="tab" data-tab="solution" id="tab-solution">Solution</button>
+  </div>
+
+  <div id="content-positions"></div>
+  <div id="content-hedges" class="hidden"></div>
+  <div id="content-solution" class="hidden"></div>
+
+  <div class="footer">
+    <strong style="color:var(--text)">Methodology:</strong> Greeks via Black-Scholes closed-form.
+    Neutralization via Gaussian elimination with partial pivoting on an N×N system
+    matching selected Greeks to hedge instruments. Vega per 1% IV move. Theta per calendar day.
+  </div>
+</div>
+
+<script>
+const normalCDF=(x)=>{const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;const s=x<0?-1:1,ax=Math.abs(x)/Math.sqrt(2),t=1/(1+p*ax);return 0.5*(1+s*(1-(((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-ax*ax)));};
+const normalPDF=(x)=>Math.exp(-0.5*x*x)/Math.sqrt(2*Math.PI);
+
+function computeGreeks(S,K,T,r,sigma,type){
+  if(T<=0||sigma<=0||S<=0||K<=0) return{delta:0,gamma:0,vega:0,theta:0,rho:0,price:0};
+  const sqrtT=Math.sqrt(T),d1=(Math.log(S/K)+(r+0.5*sigma*sigma)*T)/(sigma*sqrtT),d2=d1-sigma*sqrtT;
+  const Nd1=normalCDF(d1),Nd2=normalCDF(d2),nd1=normalPDF(d1),expRT=Math.exp(-r*T);
+  return{delta:type==="call"?Nd1:Nd1-1,gamma:nd1/(S*sigma*sqrtT),vega:S*nd1*sqrtT/100,
+    theta:type==="call"?(-(S*nd1*sigma)/(2*sqrtT)-r*K*expRT*Nd2)/365:(-(S*nd1*sigma)/(2*sqrtT)+r*K*expRT*normalCDF(-d2))/365,
+    rho:type==="call"?K*T*expRT*Nd2/100:-K*T*expRT*normalCDF(-d2)/100,
+    price:type==="call"?S*Nd1-K*expRT*Nd2:K*expRT*normalCDF(-d2)-S*normalCDF(-d1)};
+}
+
+function solveLinearSystem(A,b){
+  const n=A.length; if(n===0)return[];
+  const M=A.map((row,i)=>[...row,b[i]]);
+  for(let col=0;col<n;col++){
+    let maxRow=col,maxVal=Math.abs(M[col][col]);
+    for(let row=col+1;row<n;row++)if(Math.abs(M[row][col])>maxVal){maxVal=Math.abs(M[row][col]);maxRow=row;}
+    if(maxVal<1e-12)return null;
+    if(maxRow!==col)[M[col],M[maxRow]]=[M[maxRow],M[col]];
+    for(let row=col+1;row<n;row++){const f=M[row][col]/M[col][col];for(let j=col;j<=n;j++)M[row][j]-=f*M[col][j];}
+  }
+  const x=Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){x[i]=M[i][n];for(let j=i+1;j<n;j++)x[i]-=M[i][j]*x[j];x[i]/=M[i][i];}
+  return x;
+}
+
+let _id=0;const uid=()=>`p${++_id}`;
+let positions=[{id:uid(),type:"call",side:"long",strike:100,expiry:0.25,iv:0.30,qty:10},{id:uid(),type:"put",side:"short",strike:95,expiry:0.25,iv:0.32,qty:5}];
+let hedges=[{id:uid(),type:"put",strike:95,expiry:0.50,iv:0.32},{id:uid(),type:"call",strike:105,expiry:0.50,iv:0.28},{id:uid(),type:"call",strike:100,expiry:0.75,iv:0.30}];
+let neutralizeGreeks={delta:true,gamma:true,vega:true};
+let activeTab="positions";
+const fmt=(v,d=4)=>v==null||isNaN(v)?"—":v.toFixed(d);
+const fmtS=(v,d=4)=>v==null||isNaN(v)?"—":(v>=0?"+":"")+v.toFixed(d);
+const $=id=>document.getElementById(id);
+const getSpot=()=>parseFloat($("spot").value)||100;
+const getRate=()=>parseFloat($("rate").value)||0.05;
+function getSelectedGreeks(){const s=[];if(neutralizeGreeks.delta)s.push("delta");if(neutralizeGreeks.gamma)s.push("gamma");if(neutralizeGreeks.vega)s.push("vega");return s;}
+
+function computeAll(){
+  const S=getSpot(),r=getRate();
+  const posData=positions.map(p=>{const g=computeGreeks(S,p.strike,p.expiry,r,p.iv,p.type);const sign=p.side==="long"?1:-1;
+    return{...p,perUnit:g,delta:g.delta*p.qty*sign,gamma:g.gamma*p.qty*sign,vega:g.vega*p.qty*sign,theta:g.theta*p.qty*sign,rho:g.rho*p.qty*sign,value:g.price*p.qty*sign};});
+  const agg={delta:0,gamma:0,vega:0,theta:0,rho:0,value:0};
+  posData.forEach(p=>{agg.delta+=p.delta;agg.gamma+=p.gamma;agg.vega+=p.vega;agg.theta+=p.theta;agg.rho+=p.rho;agg.value+=p.value;});
+  const hGreeks=hedges.map(h=>computeGreeks(S,h.strike,h.expiry,r,h.iv,h.type));
+  const selGreeks=getSelectedGreeks();const N=selGreeks.length;
+  let solution=null,netGreeks=null,solvedHedgeIndices=null,errorMsg="";
+  if(N===0){errorMsg="No Greeks selected for neutralization.";}
+  else if(hedges.length<N){errorMsg=`Need at least ${N} hedge instrument${N>1?'s':''} to neutralize ${selGreeks.map(g=>({delta:'Δ',gamma:'Γ',vega:'V'}[g])).join('+')}. You have ${hedges.length}. Add ${N-hedges.length} more.`;}
+  else{
+    solvedHedgeIndices=[];for(let i=0;i<N;i++)solvedHedgeIndices.push(i);
+    const A=[],b=[];
+    for(const greek of selGreeks){A.push(solvedHedgeIndices.map(i=>hGreeks[i][greek]));b.push(-agg[greek]);}
+    const sol=solveLinearSystem(A,b);
+    if(sol){solution=sol;netGreeks={delta:agg.delta,gamma:agg.gamma,vega:agg.vega,theta:agg.theta,rho:agg.rho};
+      sol.forEach((qty,idx)=>{const hi=solvedHedgeIndices[idx];netGreeks.delta+=qty*hGreeks[hi].delta;netGreeks.gamma+=qty*hGreeks[hi].gamma;netGreeks.vega+=qty*hGreeks[hi].vega;netGreeks.theta+=qty*hGreeks[hi].theta;netGreeks.rho+=qty*hGreeks[hi].rho;});
+    }else{errorMsg="Coefficient matrix is singular — hedge instruments are linearly dependent. Try different strikes/expirations.";}
+  }
+  return{posData,agg,hGreeks,solution,netGreeks,solvedHedgeIndices,errorMsg,selGreeks};
+}
+
+function render(){
+  const{posData,agg,hGreeks,solution,netGreeks,solvedHedgeIndices,errorMsg,selGreeks}=computeAll();
+  const N=selGreeks.length;
+  $("tab-positions").textContent=`Positions (${positions.length})`;
+  $("tab-hedges").textContent=`Hedging (${hedges.length})`;
+
+  // POSITIONS
+  let posHTML='';
+  posData.forEach((p,idx)=>{
+    const tagColor=p.side==="long"?"var(--green)":"var(--red)";const tagBg=p.side==="long"?"var(--green-glow)":"var(--red-glow)";
+    posHTML+=`<div class="card"><div class="pos-header"><span style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px">Position #${idx+1}<span class="pos-tag" style="background:${tagBg};color:${tagColor}">${p.side.toUpperCase()} ${p.qty}× ${p.strike} ${p.type.toUpperCase()}</span></span>${positions.length>1?`<button class="btn btn-danger" onclick="removePosition('${p.id}')">Remove</button>`:''}</div>
+    <div class="grid-3" style="margin-bottom:8px"><div class="field"><label>Type</label><select onchange="updatePos('${p.id}','type',this.value)"><option value="call"${p.type==="call"?" selected":""}>Call</option><option value="put"${p.type==="put"?" selected":""}>Put</option></select></div><div class="field"><label>Side</label><select onchange="updatePos('${p.id}','side',this.value)"><option value="long"${p.side==="long"?" selected":""}>Long</option><option value="short"${p.side==="short"?" selected":""}>Short</option></select></div><div class="field"><label>Qty</label><input type="number" value="${p.qty}" min="1" step="1" onchange="updatePos('${p.id}','qty',+this.value)"></div></div>
+    <div class="grid-3"><div class="field"><label>Strike (K)</label><input type="number" value="${p.strike}" step="1" onchange="updatePos('${p.id}','strike',+this.value)"></div><div class="field"><label>Expiry (T yrs)</label><input type="number" value="${p.expiry}" step="0.05" onchange="updatePos('${p.id}','expiry',+this.value)"></div><div class="field"><label>IV (σ) e.g. 0.30=30%</label><input type="number" value="${p.iv}" step="0.01" onchange="updatePos('${p.id}','iv',+this.value)"></div></div>
+    <div class="greeks-row">${[["Δ",p.delta,"--accent"],["Γ",p.gamma,"--green"],["V",p.vega,"--purple"],["Θ",p.theta,"--orange"],["$",p.value,"--cyan"]].map(([s,v,c])=>`<div class="greek-cell"><div class="symbol">${s}</div><div class="value" style="color:var(${c})">${fmtS(v,3)}</div></div>`).join('')}</div></div>`;
+  });
+  posHTML+=`<div style="display:flex;gap:10px;margin-bottom:14px"><button class="btn" onclick="addPosition()" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);font-weight:700">+ Add Position</button><button class="btn" onclick="goToSolution()" style="flex:2;background:linear-gradient(135deg,var(--accent),var(--purple));color:#fff;font-size:14px;font-weight:700">⚡ Calculate Hedge →</button></div>`;
+  posHTML+=`<div class="card" style="border-color:var(--border-light)"><div class="card-label" style="color:var(--orange)">Aggregate Portfolio Greeks</div><div class="agg-grid">${[["Δ Delta",agg.delta,"--accent"],["Γ Gamma",agg.gamma,"--green"],["V Vega",agg.vega,"--purple"],["Θ Theta",agg.theta,"--orange"],["ρ Rho",agg.rho,"--cyan"]].map(([l,v,c])=>`<div class="agg-cell"><div class="label">${l}</div><div class="val" style="color:var(${c})">${fmtS(v,3)}</div></div>`).join('')}</div></div>`;
+  $("content-positions").innerHTML=posHTML;
+
+  // HEDGES
+  let hedgeHTML=`<div class="card" style="border-color:var(--accent)"><div class="card-label" style="color:var(--accent)">Select Greeks to Neutralize</div><div class="greek-toggles">${[["delta","Δ Delta","Directional risk"],["gamma","Γ Gamma","Convexity risk"],["vega","V Vega","Volatility risk"]].map(([key,label,desc])=>`<div class="greek-toggle ${neutralizeGreeks[key]?'active':''}" onclick="toggleGreek('${key}')"><div class="gt-check">${neutralizeGreeks[key]?'✓':''}</div><div><div class="gt-label">${label}</div><div class="gt-desc">${desc}</div></div></div>`).join('')}</div>
+  <div class="info-box" style="margin-top:10px">${N===0?'⚠️ Select at least one Greek to neutralize.':`Neutralizing <strong>${selGreeks.map(g=>({delta:'Δ',gamma:'Γ',vega:'V'}[g])).join(' + ')}</strong> → needs <strong>${N}</strong> hedge instrument${N>1?'s':''}. ${hedges.length<N?`<span style="color:var(--red)">Add ${N-hedges.length} more!</span>`:`You have ${hedges.length} — first ${N} will be used. ✓`}`}</div></div>`;
+
+  hedges.forEach((h,i)=>{const g=hGreeks[i];const isUsed=solvedHedgeIndices&&solvedHedgeIndices.includes(i);
+    hedgeHTML+=`<div class="card" style="${isUsed?'border-color:var(--green)':''}"><div class="pos-header"><span class="card-label" style="color:var(--orange);margin-bottom:0">Hedge #${i+1} ${i<N?'<span style="margin-left:8px;padding:2px 8px;border-radius:4px;font-size:9px;background:var(--green-glow);color:var(--green)">ACTIVE</span>':'<span style="margin-left:8px;padding:2px 8px;border-radius:4px;font-size:9px;background:var(--surface2);color:var(--text-muted)">SPARE</span>'}</span>${hedges.length>1?`<button class="btn btn-danger" onclick="removeHedge('${h.id}')">Remove</button>`:''}</div>
+    <div class="grid-4" style="margin-top:8px"><div class="field"><label>Type</label><select onchange="updateHedge('${h.id}','type',this.value)"><option value="call"${h.type==="call"?" selected":""}>Call</option><option value="put"${h.type==="put"?" selected":""}>Put</option></select></div><div class="field"><label>Strike (K)</label><input type="number" value="${h.strike}" step="1" onchange="updateHedge('${h.id}','strike',+this.value)"></div><div class="field"><label>Expiry (T)</label><input type="number" value="${h.expiry}" step="0.05" onchange="updateHedge('${h.id}','expiry',+this.value)"></div><div class="field"><label>IV (σ) e.g. 0.30</label><input type="number" value="${h.iv}" step="0.01" onchange="updateHedge('${h.id}','iv',+this.value)"></div></div>
+    <div class="greeks-row">${[["Δ",g.delta],["Γ",g.gamma],["V",g.vega],["Θ",g.theta],["$",g.price]].map(([s,v])=>`<div class="greek-cell"><div class="symbol">${s}</div><div class="value" style="color:var(--text-dim)">${fmt(v)}</div></div>`).join('')}</div></div>`;
+  });
+  hedgeHTML+=`<button class="btn btn-primary" onclick="addHedge()">+ Add Hedge Instrument</button>`;
+  $("content-hedges").innerHTML=hedgeHTML;
+
+  // SOLUTION
+  let solHTML=`<div class="card" style="padding:12px 16px;margin-bottom:12px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Neutralizing:</span>${selGreeks.length===0?'<span style="color:var(--red);font-size:12px;font-weight:600">None selected</span>':''}${selGreeks.map(g=>{const sym={delta:'Δ Delta',gamma:'Γ Gamma',vega:'V Vega'}[g];const col={delta:'--accent',gamma:'--green',vega:'--purple'}[g];return`<span style="padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:var(${col}-glow);color:var(${col})">${sym}</span>`;}).join('')}<span style="font-size:10px;color:var(--text-muted);margin-left:auto">${N} instrument${N!==1?'s':''} used</span></div></div>`;
+
+  const ok=solution!==null;
+  solHTML+=`<div class="status ${ok?'ok':'fail'}"><div class="status-dot"></div><span class="status-text">${ok?`SOLUTION FOUND — ${selGreeks.map(g=>({delta:'Δ',gamma:'Γ',vega:'V'}[g])).join('·')} Neutral`:(errorMsg||'No solution')}</span></div>`;
+
+  solHTML+=`<div class="card"><div class="card-label" style="color:var(--accent)">Original Portfolio (${positions.length} position${positions.length>1?'s':''})</div><div class="agg-grid">${[["Δ Delta",agg.delta,"--accent"],["Γ Gamma",agg.gamma,"--green"],["V Vega",agg.vega,"--purple"],["Θ Theta",agg.theta,"--orange"],["ρ Rho",agg.rho,"--cyan"]].map(([l,v,c])=>`<div class="agg-cell"><div class="label">${l}</div><div class="val" style="color:var(${c})">${fmtS(v,3)}</div></div>`).join('')}</div></div>`;
+
+  if(ok){
+    const cols=solution.length<=3?`repeat(${solution.length},1fr)`:'repeat(3,1fr)';
+    solHTML+=`<div class="card"><div class="card-label" style="color:var(--orange)">Required Hedge Quantities</div><div style="display:grid;grid-template-columns:${cols};gap:10px">${solution.map((qty,idx)=>{const hi=solvedHedgeIndices[idx];const col=qty>=0?"var(--green)":"var(--red)";const bg=qty>=0?"var(--green-glow)":"var(--red-glow)";return`<div class="qty-card"><div class="instrument">#${hi+1} — ${hedges[hi].strike}${hedges[hi].type[0].toUpperCase()} @${hedges[hi].expiry}y</div><div class="amount" style="color:${col}">${qty>=0?"+":""}${qty.toFixed(2)}</div><span class="action-tag" style="background:${bg};color:${col}">${qty>=0?"BUY":"SELL"} ${Math.abs(qty).toFixed(2)}</span></div>`;}).join('')}</div></div>`;
+
+    solHTML+=`<div class="card" style="border-color:var(--green)"><div class="card-label" style="color:var(--green)">Net Portfolio Greeks (After Hedging)</div><div class="agg-grid">${netGreeks?[["Δ Delta",netGreeks.delta,"--accent","delta"],["Γ Gamma",netGreeks.gamma,"--green","gamma"],["V Vega",netGreeks.vega,"--purple","vega"],["Θ Theta",netGreeks.theta,"--orange","theta"],["ρ Rho",netGreeks.rho,"--cyan","rho"]].map(([l,v,c,key])=>{const targeted=selGreeks.includes(key);const isN=targeted&&Math.abs(v)<1e-6;return`<div class="agg-cell ${isN?'neutral':''}"><div class="label">${l}${targeted?' 🎯':''}</div><div class="val" style="color:${isN?'var(--green)':`var(${c})`}">${isN?'≈ 0':fmtS(v,4)}</div>${isN?'<div class="neutral-badge">NEUTRAL</div>':''}</div>`;}).join(''):''}
+    </div><div class="info-box" style="margin-top:10px;text-align:center">${selGreeks.map(g=>({delta:'Δ',gamma:'Γ',vega:'V'}[g])).join(', ')} neutralized. Theta (Θ = ${fmt(netGreeks?.theta,4)}/day) is the hedge cost.${selGreeks.length<3?` <span style="color:var(--orange)">${['delta','gamma','vega'].filter(g=>!selGreeks.includes(g)).map(g=>({delta:'Δ',gamma:'Γ',vega:'V'}[g])).join(', ')} exposure remains.</span>`:''}</div></div>`;
+  }else if(errorMsg){solHTML+=`<div class="info-box" style="text-align:center;padding:24px">${errorMsg}</div>`;}
+
+  $("content-solution").innerHTML=solHTML;
+}
+
+function addPosition(){positions.push({id:uid(),type:"call",side:"long",strike:100,expiry:0.25,iv:0.30,qty:10});render();}
+function removePosition(id){positions=positions.filter(p=>p.id!==id);render();}
+function updatePos(id,field,val){positions=positions.map(p=>p.id===id?{...p,[field]:val}:p);render();}
+function addHedge(){hedges.push({id:uid(),type:"call",strike:100,expiry:0.50,iv:0.30});render();}
+function removeHedge(id){hedges=hedges.filter(h=>h.id!==id);render();}
+function updateHedge(id,field,val){hedges=hedges.map(h=>h.id===id?{...h,[field]:val}:h);render();}
+function toggleGreek(key){neutralizeGreeks[key]=!neutralizeGreeks[key];render();}
+function goToSolution(){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));$('tab-solution').classList.add('active');activeTab='solution';["positions","hedges","solution"].forEach(t=>{$(`content-${t}`).classList.toggle('hidden',t!=='solution');});render();}
+
+document.querySelectorAll('.tab').forEach(tab=>{tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));tab.classList.add('active');activeTab=tab.dataset.tab;["positions","hedges","solution"].forEach(t=>{$(`content-${t}`).classList.toggle('hidden',t!==activeTab);});});});
+$("spot").addEventListener("input",render);$("rate").addEventListener("input",render);
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# Core: no dependencies (pure Python)
+
+# Development
+pytest>=7.0
+
+# Report generation
+python-docx>=1.0
