@@ -447,6 +447,8 @@ $("approvals").addEventListener("click", (event) => {
     } else if (act === "reject") {
       const reason = $("reason").value;
       await api(`/v1/proposals/${id}/reject`, {method: "POST", body: JSON.stringify({reason})});
+      // A reason belongs to one rejection, and the audit log cannot correct one reused by accident.
+      $("reason").value = "";
     } else {
       const text = await api(`/v1/proposals/${id}/tickets`, {method: "POST"});
       const link = document.createElement("a");
