@@ -55,6 +55,9 @@ def test_sign_lives_only_in_quantity_so_side_cannot_disagree():
         Position(euro("call", 100, 30), 1.5)  # type: ignore[arg-type]
     with pytest.raises(ValidationError, match="signed int"):
         Position(euro("call", 100, 30), True)
+    # There is nowhere for a second statement of the side to go.
+    with pytest.raises(TypeError, match="side"):
+        Position(euro("call", 100, 30), -5, side="BUY")  # type: ignore[call-arg]
 
 
 def test_expired_itm_keeps_intrinsic_and_is_flagged():

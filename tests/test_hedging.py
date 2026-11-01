@@ -40,7 +40,7 @@ from greeks_neutralizer.hedging.problem import (
 )
 from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.pricing.book import value_book
-from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, Scenario
+from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, Scenario, shock_snapshot
 from tests.conftest import AS_OF, euro, flat_snapshot
 
 STOCK = LinearInstrument("XYZ", "XYZ")
@@ -674,7 +674,25 @@ def test_stock_moving_with_spot_is_not_instability():
 def test_stability_report_on_diversified_hedges():
     p = solve(run_stability=True)
     assert p.stability is not None
-    assert len(p.stability.drift) == 6
+
+    def penalized(market):
+        # By hand from what the objective says: weight 1 on each of the three Greeks, as DGV sets.
+        held = value_book(p.hedged_book(BOOK), market).by_underlying["XYZ"]
+        return abs(held.delta_dollars) + abs(held.gamma_1pct) + abs(held.vega_1pt)
+
+    today = penalized(flat_snapshot())
+    shocks = {
+        "spot +0.25%": Scenario("a", spot_shock=0.0025),
+        "spot -0.25%": Scenario("b", spot_shock=-0.0025),
+        "vol +1pt": Scenario("c", vol_shock=0.01),
+        "vol -1pt": Scenario("d", vol_shock=-0.01),
+        "skew steeper": Scenario("e", skew_shock=-0.02),
+        "skew flatter": Scenario("f", skew_shock=0.02),
+    }
+    assert set(p.stability.drift) == set(shocks)
+    for name, shock in shocks.items():
+        expected = penalized(shock_snapshot(flat_snapshot(), shock)) - today
+        assert_allclose(p.stability.drift[name], expected, rtol=1e-9, atol=1e-6)
 
 
 def test_frontier_contains_baselines_and_cost_rises_with_aversion():

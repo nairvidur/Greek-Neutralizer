@@ -523,7 +523,8 @@ class _Program:
                 exposure = abs(self._exposure_column(target, row))
                 capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
                 reach = exposure * capacity * dollars_per_unit
-                unseen = reach > 0.0 and exposure / scale < _HIGHS_SMALL_MATRIX_VALUE
+                coefficient = exposure * row.candidate.lot_size / scale
+                unseen = reach > 0.0 and coefficient < _HIGHS_SMALL_MATRIX_VALUE
                 if unseen and (i not in dropped or reach > dropped[i][1]):
                     dropped[i] = (target, reach)
         return dropped
@@ -570,8 +571,9 @@ class _Program:
         """A candidate at capacity that scores below the LP bound, which no feasible hedge can do.
 
         Nothing else notices a solver that cannot see an instrument, since verification reprices
-        the lots it chose and the LP bound shares the same blind spot. Raises if it is an instrument
-        the solver was known not to see. Any other is a defect, and is returned to be reported so.
+        the lots it chose and the LP bound shares the same blind spot. Raises if the solver was
+        known not to see something, since the bound is then not valid, whichever candidate beats it.
+        With everything visible a miss is a defect, and is returned to be reported so.
         """
         dropped = self._dropped_by_the_solver()
         slack = 1e-6 * max(abs(solution.lower_bound), 1.0)
@@ -581,8 +583,8 @@ class _Program:
                 trial = solution.lots.copy()
                 trial[i] = quantity
                 if self.evaluate(trial) < solution.lower_bound - slack:
-                    if i in dropped:
-                        raise self._unprovable({i: dropped[i]})
+                    if dropped:
+                        raise self._unprovable(dropped)
                     name = row.candidate.instrument.describe()
                     return f"{quantity} of {name} beats the lower bound the solver reported"
         return None
@@ -858,11 +860,7 @@ class _Program:
         relaxed = self._relax(costs, constraints)
         dropped = self._dropped_by_the_solver()
         if relaxed.status == 2:
-            if dropped:
-                raise self._unprovable(dropped)
-            raise HedgeInfeasibleError(
-                "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
-            )
+            raise self._infeasible("no hedge satisfies the hard constraints", dropped)
         if relaxed.status == 1:
             raise SearchLimitError(
                 f"the continuous relaxation did not finish inside {config.time_limit_seconds:g}s, "
@@ -907,12 +905,10 @@ class _Program:
                 gap = (objective - lower_bound) / max(abs(objective), 1.0)
                 return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
         if result.x is None and result.status == 2:
-            if dropped:
-                raise self._unprovable(dropped)
-            raise HedgeInfeasibleError(
+            raise self._infeasible(
                 "the continuous hedge is feasible but no whole number of lots and shares is, at "
                 "full capacity: widen a band by about one unit's exposure",
-                self.diagnose_infeasibility(),
+                dropped,
             )
         raise SearchLimitError(
             f"the integer search stopped with no hedge, inside mip_node_limit="
@@ -929,12 +925,35 @@ class _Program:
             lots[i] = (buys - sells) * row.candidate.lot_size
         return lots
 
-    def diagnose_infeasibility(self) -> tuple[str, ...]:
-        """Which hard constraints cannot be met, found by solving with explicit slack on each.
+    def _infeasible(
+        self, message: str, dropped: dict[int, tuple[GreekTarget, float]]
+    ) -> HedgeInfeasibleError | SolverRangeError:
+        """What a status 2 means. With something unseen, the solve proved nothing about the problem
+        asked, and only a shortfall past all the unseen instruments could do is still a proof."""
+        binding, shortfall_is_real = self._diagnose_infeasibility(dropped)
+        if dropped and not shortfall_is_real:
+            return self._unprovable(dropped)
+        return HedgeInfeasibleError(message, binding)
+
+    def _diagnose_infeasibility(
+        self, dropped: dict[int, tuple[GreekTarget, float]]
+    ) -> tuple[tuple[str, ...], bool]:
+        """Which hard constraints cannot be met, found by solving with explicit slack on each, and
+        whether any is short by more than all of `dropped` could make up at capacity.
 
         The relaxation minimizes total slack, so non-zero slack names the binding constraints
-        and how far each one is from achievable, in its own units.
+        and how far each one is from achievable, in its own units. These rows are unscaled, so the
+        solver sees here what it dropped from the scaled ones.
         """
+
+        def unseen_reach(value_of: Any) -> float:
+            return sum(
+                abs(float(value_of(row)))
+                * max(row.buy_total_cap, row.sell_total_cap)
+                * row.candidate.lot_size
+                for row in (self.usable[i] for i in dropped)
+            )
+
         config = self.problem.config
         banded = [t for t in self.targets if t.lower is not None or t.upper is not None]
         budget = config.premium_budget
@@ -947,6 +966,7 @@ class _Program:
         lo: list[float] = []
         hi: list[float] = []
         labels: list[str] = []
+        reaches: list[float] = []
         next_slack = self.size
 
         def net_terms(column_of: Any) -> dict[int, float]:
@@ -978,6 +998,8 @@ class _Program:
                 f"{label}: lower bound short by {{:.2f}}",
                 f"{label}: upper bound over by {{:.2f}}",
             ]
+            reach = unseen_reach(lambda row, t=target: self._exposure_column(t, row))
+            reaches += [reach, reach]
             next_slack += 2
         if budget is not None:
             terms = net_terms(lambda row: row.mid_value)
@@ -992,10 +1014,11 @@ class _Program:
             lo.append(-np.inf)
             hi.append(budget)
             labels.append("premium budget over by {:.2f}")
+            reaches.append(unseen_reach(lambda row: row.mid_value))
             next_slack += 1
 
         if not lo:
-            return ("infeasible with no bands or budget: check candidate capacity",)
+            return ("infeasible with no bands or budget: check candidate capacity",), False
 
         lb, ub = self._variable_bounds()
         lb = np.concatenate([lb, np.zeros(extra)])
@@ -1022,14 +1045,16 @@ class _Program:
             options={"time_limit": config.time_limit_seconds, "disp": False},
         )
         if result.x is None and result.status != 2:
-            return (f"the binding constraints could not be diagnosed: {result.message}",)
+            return (f"the binding constraints could not be diagnosed: {result.message}",), False
         if result.x is None:
-            return ("constraints conflict even with all bands relaxed: check capacity",)
+            return ("constraints conflict even with all bands relaxed: check capacity",), False
         slack = np.asarray(result.x[self.size :], dtype=np.float64)
         found = tuple(
             label.format(value) for label, value in zip(labels, slack, strict=True) if value > 1e-6
         )
-        return found or ("infeasible only under integer lots: widen a band by one contract's size",)
+        real = any(value > max(1e-6, reach) for value, reach in zip(slack, reaches, strict=True))
+        unbound = ("infeasible only under integer lots: widen a band by one contract's size",)
+        return found or unbound, real
 
 
 def _problem_fingerprint(problem: HedgeProblem, run_stability: bool) -> str:

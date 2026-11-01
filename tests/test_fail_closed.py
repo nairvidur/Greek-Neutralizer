@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import threading
 from dataclasses import replace
@@ -506,11 +508,16 @@ def test_tickets_name_the_listed_root_and_full_terms():
     )
     proposal = replace(_verified_proposal(), legs=(_leg(contract),))
     assert "55=SPXW|" in tickets_fix(proposal, "abcdefgh", AS_OF)
-    text = tickets_csv(proposal, "abc")
-    header = text.splitlines()[0]
-    for column in ("multiplier", "style", "settlement"):
-        assert column in header
-    assert "SPXW" in text.splitlines()[1]
+    rows = list(csv.DictReader(io.StringIO(tickets_csv(proposal, "abc"))))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "SPXW"
+    assert row["underlying"] == "SPX"
+    assert row["right"] == "call"
+    assert float(row["strike"]) == 5000.0
+    assert float(row["multiplier"]) == 100.0
+    assert row["style"] == "european"
+    assert row["settlement"] == "cash"
 
 
 def test_cboe_keeps_the_listed_root():

@@ -7,6 +7,7 @@ hand-worked spread and volume arithmetic; and each gate's direction from the mea
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
@@ -27,7 +28,7 @@ from greeks_neutralizer.domain import (
     Position,
     Quote,
 )
-from greeks_neutralizer.errors import SolverRangeError, ValidationError
+from greeks_neutralizer.errors import HedgeInfeasibleError, SolverRangeError, ValidationError
 from greeks_neutralizer.examples import (
     DEFAULT_AS_OF,
     example_book,
@@ -222,6 +223,16 @@ def test_the_ladder_endpoint_totals_each_date(tmp_path):
     assert body["count"] == 1
     assert body["buckets"][0]["expiry"] == "2026-02-04"
     assert body["buckets"][0]["n_lines"] == 2
+    # Short 10 of each by closed form, 30 days, 5%, 25%: the two lines and nothing of the shares.
+    greeks = [
+        black_greeks(100.0, strike, 30 / 365, 0.05, 0.0, 0.25, omega)
+        for strike, omega in ((100.0, 1), (95.0, -1))
+    ]
+    exposure = body["buckets"][0]["exposure"]
+    delta = -1000 * sum(g.delta[0] for g in greeks) * 100.0
+    vega = -1000 * sum(g.vega[0] for g in greeks) * 0.01
+    assert exposure["delta_dollars"] == pytest.approx(delta, rel=1e-9)
+    assert exposure["vega_1pt"] == pytest.approx(vega, rel=1e-9)
 
 
 def test_limit_breaches_are_reported_with_hand_worked_values(tmp_path):
@@ -1399,10 +1410,20 @@ def test_a_band_only_an_unseen_instrument_can_reach_is_not_called_infeasible(tmp
     assert statuses == {"out_of_range"}
 
 
-def test_a_better_hedge_the_solver_could_not_see_is_not_reported_as_a_bug(tmp_path):
-    # The oracle: 1,000 futures and every share on offer sold improves on the solver's bound, which
-    # cannot be, so this is what the solver could not see. It was a 500 saying to report a bug.
+@pytest.mark.parametrize("stock_first", [True, False], ids=["stock-first", "future-first"])
+def test_a_better_hedge_the_solver_could_not_see_is_not_reported_as_a_bug(tmp_path, stock_first):
+    # It was a 500 saying to report a bug, and which candidate came first decided it.
     request = _stock_beside_a_giant_future(-1_004_500_000, future_lots=1000, stock_shares=500)
+    if not stock_first:
+        request["candidates"].reverse()
+    # The oracle is a hedge by hand: all 1,000 futures, then the shares on offer closing the rest.
+    problem, snapshot, _ = parse_hedge_request(request)
+    by_kind = {c.instrument.kind.value: c.instrument for c in problem.candidates}
+    futures_only = [*problem.book, Position(by_kind["future"], 1000)]
+    left = value_book(futures_only, snapshot).by_underlying["XYZ"].delta_dollars
+    with_stock = [*futures_only, Position(by_kind["spot"], int(-math.copysign(500, left)))]
+    closer = value_book(with_stock, snapshot).by_underlying["XYZ"].delta_dollars
+    assert abs(closer) < abs(left)
     client = _client(tmp_path)
     response = client.post("/v1/hedge", headers=ALICE, json=request)
     assert response.status_code == 422, response.text
@@ -1413,6 +1434,19 @@ def test_a_better_hedge_the_solver_could_not_see_is_not_reported_as_a_bug(tmp_pa
     statuses = [p["status"] for p in frontier.json()["points"]]
     assert "out_of_range" in statuses
     assert "infeasible" not in statuses
+
+
+def test_a_lot_size_that_lets_the_solver_see_the_stock_is_not_refused(tmp_path):
+    # Per share the stock is 9.96e-11 of the row, under the 1e-9 HiGHS drops. In lots of 100, which
+    # is the coefficient the solver receives, it is 9.96e-09, so it is seen, and it sells them all.
+    request = GIANT_FUTURE_BOOKS["largest-book"]
+    assert _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).status_code == 422
+    in_lots = copy.deepcopy(request)
+    in_lots["candidates"][0]["lot_size"] = 100
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=in_lots)
+    assert response.status_code == 200, response.text
+    quantities = {leg["instrument"]["symbol"]: leg["quantity"] for leg in response.json()["legs"]}
+    assert quantities["XYZ"] == 100_000
 
 
 def test_a_lower_bound_miss_by_a_visible_instrument_is_still_reported_as_a_bug(monkeypatch):
@@ -1445,17 +1479,68 @@ def test_dust_on_a_real_chain_is_seen_as_dropped_and_still_gets_a_hedge(monkeypa
     assert proposal.verification.passed
 
 
-def test_a_truly_impossible_band_on_a_chain_with_dust_is_a_refusal_not_a_proof(monkeypatch):
-    # The price of the rule, pinned: with deep options unseen, the solver cannot prove this either.
+def _chain_with_dust(config=None, band=None):
     # 1e15 of delta is past all of this universe at capacity, about 1e12, so it is truly impossible.
     spot = 6000.0
     strikes = np.arange(4400.0, 8000.0, 25.0)
     candidates = _strike_grid_candidates(spot, strikes, (7, 30, 90), max_buy=5000, max_sell=5000)
     book = (Position(euro("call", 6000.0, 30), -5000),)
-    band = (GreekTarget("XYZ", GreekName.DELTA, lower=1e15, upper=2e15), *DGV[1:])
-    problem = HedgeProblem(book, candidates, band, (), HedgeConfig())
-    with pytest.raises(SolverRangeError, match="not a proof"):
-        solve_hedge(problem, flat_snapshot(spot=spot))
+    targets = (band or GreekTarget("XYZ", GreekName.DELTA), *DGV[1:])
+    problem = HedgeProblem(book, candidates, targets, (), config or HedgeConfig())
+    return problem, flat_snapshot(spot=spot)
+
+
+def test_an_impossible_band_on_a_chain_with_dust_names_the_band_to_widen():
+    # 64 deep options are unseen here, all on other rows, and worth about $31 at most. They cannot
+    # be why 1e15 of delta is out of reach, so the operator is told which band it is.
+    problem, snapshot = _chain_with_dust(
+        band=GreekTarget("XYZ", GreekName.DELTA, lower=1e15, upper=2e15)
+    )
+    with pytest.raises(HedgeInfeasibleError, match="hard constraints") as err:
+        solve_hedge(problem, snapshot)
+    assert len(err.value.binding) == 1
+    assert err.value.binding[0].startswith("delta_dollars on XYZ: lower bound short by")
+
+
+def test_an_impossible_budget_on_a_chain_with_dust_names_the_budget():
+    # Selling everything on offer brings in far less than a budget asking to receive 1e15.
+    problem, snapshot = _chain_with_dust(config=HedgeConfig(premium_budget=-1e15))
+    with pytest.raises(HedgeInfeasibleError, match="hard constraints") as err:
+        solve_hedge(problem, snapshot)
+    assert err.value.binding[0].startswith("premium budget over by")
+
+
+def _band_past_all_capacity(beyond):
+    # A short book past all 5,000 futures and all 500 shares, $50,000 of them, by `beyond` dollars.
+    request = _stock_beside_a_giant_future(-1, future_lots=5000, stock_shares=500)
+    problem, snapshot, _ = parse_hedge_request(request)
+    future = problem.candidates[1].instrument
+    future_delta = value_book([Position(future, 1)], snapshot).by_underlying["XYZ"].delta_dollars
+    shares = round((5000 * future_delta + 50_000.0 + beyond) / 100.0)
+    return _stock_beside_a_giant_future(
+        -shares,
+        future_lots=5000,
+        stock_shares=500,
+        band={"lower": -1_000.0, "upper": 1_000.0},
+    )
+
+
+def test_a_shortfall_within_what_the_unseen_stock_could_reach_stays_a_refusal(tmp_path):
+    # $10,000 short, less than the stock's $50,000. It is impossible, but it is not what proves it.
+    request = _band_past_all_capacity(10_000.0)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422, response.text
+    assert response.json()["type"] == "validation"
+    assert "XYZ (spot) is too small" in response.json()["error"]
+
+
+def test_a_shortfall_past_what_the_unseen_stock_could_reach_is_a_proof(tmp_path):
+    request = _band_past_all_capacity(10_000_000.0)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["type"] == "infeasible"
+    assert body["binding"][0].startswith("delta_dollars on XYZ: lower bound short by")
 
 
 def test_one_frontier_point_out_of_range_leaves_the_others_standing(tmp_path):
@@ -1557,6 +1642,29 @@ def test_a_future_is_compared_with_the_forward(tmp_path, mid, usable):
     body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
     assert bool(body["legs"]) is usable
     assert len(body["excluded"]) == (0 if usable else 1)
+
+
+@pytest.mark.parametrize(
+    ("mid", "usable"),
+    # At a 25% rate and a year out, the forward is 100 * exp(0.25) = 128.40. So 128 is 28% from spot
+    # but on the forward, and 95 is 5% from spot but 26% from the forward: spot would swap these.
+    [(128.0, True), (95.0, False)],
+)
+def test_a_future_far_from_spot_is_judged_on_its_forward_alone(tmp_path, mid, usable):
+    request = _stock_quoted_at(100.0)
+    request["market"]["underlyings"]["XYZ"]["rate"] = 0.25
+    request["candidates"][0]["instrument"] = {
+        "type": "linear",
+        "symbol": "XYF",
+        "underlying": "XYZ",
+        "kind": "future",
+        "multiplier": 50.0,
+        "expiry": (DEFAULT_AS_OF + timedelta(days=365)).isoformat(),
+    }
+    request["candidates"][0]["quote"].update(bid=mid - 0.01, ask=mid + 0.01)
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert len(body["excluded"]) == (0 if usable else 1)
+    assert bool(body["legs"]) is usable
 
 
 def _spxl_request():
@@ -1674,12 +1782,20 @@ def test_the_mark_itself_is_spot_times_the_ratio():
     assert valued.total_value == pytest.approx(600_000.0)
 
 
-def test_a_proposal_holding_or_trading_a_proxy_says_how_it_is_marked(tmp_path):
+def test_a_proposal_holding_a_proxy_says_how_it_is_marked(tmp_path):
     market, book = _proxy_market_and_book()
     request = _spxl_request()
     request["book"] = [*request["book"], *book]
     request["market"] = market
     body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert any(i.startswith("PROXY_MARK") and "SPXL" in i for i in body["issues"])
+
+
+def test_a_proposal_only_trading_a_proxy_says_how_it_is_marked(tmp_path):
+    # Nothing in the book is a proxy, so only the hedged book can bring this up.
+    request = _spxl_request()
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert [leg["instrument"]["symbol"] for leg in body["legs"]] == ["SPXL"]
     assert any(i.startswith("PROXY_MARK") and "SPXL" in i for i in body["issues"])
 
 

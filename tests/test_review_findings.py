@@ -194,10 +194,20 @@ def test_expired_future_is_not_a_candidate_and_leaves_the_book():
     assert any(item.reason == "expired" for item in proposal.excluded)
     assert all(leg.instrument != old for leg in proposal.legs)
 
-    short = future(days=1)
-    days = _path([100.0, 100.0, 100.0], step_days=5)
-    result = run_backtest(Days(days), Hold(Position(short, 1)), Unhedged())
-    assert result.days[1].book_pnl == 0.0
+    class OpenOnce:
+        def __init__(self):
+            self.opened = False
+
+        def trades(self, day, holdings):
+            if self.opened:
+                return ()
+            self.opened = True
+            return (Position(future(days=1), 1),)
+
+    # Spot keeps moving after expiry, so a position that had not left would keep making P&L.
+    days = _path([100.0, 110.0, 120.0, 130.0], step_days=5)
+    result = run_backtest(Days(days), OpenOnce(), Unhedged())
+    assert [day.book_pnl for day in result.days[1:]] == [0.0, 0.0]
 
 
 def test_future_delta_with_dividends_matches_finite_difference():

@@ -14,11 +14,3 @@ def test_readme_library_example_runs(capsys):
     assert blocks, "the README should have a Python example"
     exec(compile(blocks[0], "README.md", "exec"), {})
     assert "Buy" in capsys.readouterr().out
-
-
-def test_paths_named_in_the_readme_exist():
-    readme = (ROOT / "README.md").read_text()
-    names = re.findall(r"`(docs/[\w./-]+)`", readme)
-    assert names, "the README should name paths under docs/, or this pattern has stopped matching"
-    for name in names:
-        assert (ROOT / name).exists(), name

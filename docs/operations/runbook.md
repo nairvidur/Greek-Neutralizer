@@ -28,10 +28,10 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | Proposal status `no_usable_candidates` | Every candidate was excluded | **It does not mean no hedge is needed.** Fix the feed, then re-propose |
 | Proposal status `partial_coverage` | A targeted underlying has no candidate that can trade, and is unhedged | **Read the `NO_USABLE_CANDIDATES` issue.** Its residual stays as it was, so fix the feed or add candidates, then re-propose |
 | 422 `market_data`, "model and quotes disagree" | Most quotes are far from the model | Check vol units, rates, and spot before anything else |
-| HTTP 500 `verification_failed` | A solution failed independent repricing, or a candidate the solver could see beat its own lower bound at capacity | **Do not trade.** Save the request and report it as a bug: this should never happen |
+| HTTP 500 `verification_failed` | A solution failed independent repricing, or a candidate beat the solver's own lower bound at capacity with every instrument visible to it | **Do not trade.** Save the request and report it as a bug: this should never happen |
 | Proposal status `unstable` | A small input change moves the trade and costs benefit | Review the notes, and widen the candidates or tighten the universe |
 | Proposal status `within_gap` | Integer lots cost more than the configured gap | Read the `INTEGRALITY_GAP` issue. Usually fine at the stated size, and a weak bound with `max_legs` |
-| 422 `infeasible` | The solver proved, over whole lots and shares at full capacity and with every instrument visible to it, that no hedge meets the bands | Read `binding`, then widen those bands or add candidates |
+| 422 `infeasible` | The solver proved, over whole lots and shares at full capacity, that no hedge meets the bands. With an instrument unseen, this means a band or budget is short by more than all the unseen instruments could reach | Read `binding`, then widen those bands or add candidates |
 | 422 `validation`, "looser than its limit" | The request loosens a gate past this service's limit | Leave the gate out to get the limit, or have whoever owns the deployment raise that `GN_GATE_*` limit. Do not change it to get a trade through |
 | `GATE_SETTINGS` in issues | The request set a fail-closed gate differently from this service's limit | Approvers: decide whether that setting is justified before approving |
 | 422 `search_limit` | The search stopped with no hedge, in the base solve or a stability re-solve. **This does not mean no hedge exists** | Reduce the universe. A request can raise `mip_node_limit` or `time_limit_seconds` only up to `GN_GATE_MIP_NODE_LIMIT` and `GN_GATE_TIME_LIMIT_SECONDS`, so past that it is the deployment owner's decision. Do not widen bands because of it |
@@ -79,9 +79,9 @@ A scenario that would take spot past 1e9 is refused too, by name.
 A hedge request is also refused when a scenario loss, band, or budget reaches 1e20, which the solver reads as infinite, or when an instrument too small for the solver to see could still make $1,000 or more at capacity under a typical shock for that Greek.
 Below that a result that stands is returned as usual: the solver just does not see its effect on that row, and verification reprices what it chose.
 While any instrument with capacity is unseen, the solver is solving a different problem, so it cannot prove anything about this one.
-If it finds nothing, or a candidate it could not see beats its lower bound, that is this same refusal naming the instrument, as a 422 `validation` and never `infeasible`, and it says nothing about whether a hedge exists.
-On a large chain, deep options are nearly always unseen, so a truly impossible band there gets this refusal rather than `infeasible`.
-A frontier point refused this way has status `out_of_range`, while the other points stand.
+If it finds nothing, it checks each band and budget again with every instrument counted: one short by more than all the unseen instruments could reach is still `infeasible`, and `binding` names it.
+Otherwise, or if any candidate beats its lower bound, that is this same refusal naming the instrument, as a 422 `validation`, and it says nothing about whether a hedge exists.
+A frontier point refused this way has status `out_of_range`, and one with such a shortfall has status `infeasible`, while the other points stand.
 A stability re-solve refused this way adds a `STABILITY_INCOMPLETE` issue, and the hedge is not called stable or unstable for it, unless the held hedge itself no longer fits that market, which is still `unstable`.
 
 ## Listing proposals
