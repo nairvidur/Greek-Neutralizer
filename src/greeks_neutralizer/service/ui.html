@@ -278,7 +278,7 @@ function renderFrontier(data) {
   const issues = [...new Set(data.points.flatMap((p) => p.issues))];
   $("frontierOut").innerHTML = table(["Choice", "Status", "Cost", "Legs", "Residual", "Worst stress", "Issues"],
     data.points.map((p) => p.unsolved_reason
-      ? [`<td>${escapeHtml(p.label)}</td>`, `<td><span class="badge bad">${escapeHtml(p.status.replace("_", " "))}</span></td>`,
+      ? [`<td>${escapeHtml(p.label)}</td>`, `<td><span class="badge bad">${escapeHtml(p.status.replaceAll("_", " "))}</span></td>`,
          `<td class="wrap" colspan="4">${escapeHtml(p.unsolved_reason)}</td>`, `<td>${p.issues.length}</td>`]
       : [`<td>${escapeHtml(p.label)}</td>`,
          `<td>${p.status ? statusBadge(p.status) : '<span class="tag">baseline</span>'}</td>`,

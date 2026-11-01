@@ -155,7 +155,8 @@ class LinearInstrument:
     `delta_ratio` is the units of underlying exposure per unit of price-1 multiplier, used for
     proxies (one SPY share is about 0.1 SPX points) and `basis_vol` is the annualized volatility of
     the untradable basis, which is carried into proposals as a quantified residual risk.
-    A future's `expiry` makes its spot delta the carry factor F/S.
+    A future's `expiry` sets its spot delta, exp(-q T) / D, which is not F/S once dividends are in
+    the forward.
     """
 
     symbol: str

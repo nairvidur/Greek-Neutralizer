@@ -41,6 +41,7 @@ from greeks_neutralizer.errors import (
     ValidationError,
 )
 from greeks_neutralizer.hedging.problem import (
+    DEFAULT_WEIGHTS,
     ExcludedCandidate,
     GreekName,
     GreekTarget,
@@ -297,10 +298,12 @@ _MAX_SOLVER_COST = 1e15
 _MAX_BOOK_TO_HEDGE_SCALE = 1e4
 _HIGHS_SMALL_MATRIX_VALUE = 1e-9
 _HIGHS_INFINITY = 1e20
-# A dropped coefficient matters if the instrument at capacity could do this share of what the row's
-# largest hedge can at capacity. Below it, Black gamma and vega deep in a strike grid are dropped
-# harmlessly, and a real chain nearly always has such options.
-_MATERIAL_SHARE_OF_REACH = 1e-3
+# A dropped coefficient matters if the instrument at capacity could make this many dollars under a
+# typical shock for its Greek. Black gamma and vega deep in a strike grid are dropped harmlessly: at
+# 5,000 lots the most measured was about $490, from spots of 150 to 20,000 and any book size. A
+# stock of 100,000 shares at $100 is $100,000.
+_MATERIAL_REACH_DOLLARS = 1000.0
+_FLOAT_NOISE_PER_GROSS_DOLLAR = 1e-12
 
 
 def _reached_clock(result: Any) -> bool:
@@ -506,10 +509,12 @@ class _Program:
         matters, or a right-hand side it reads as infinite, which can even give a false proof of
         infeasibility.
 
-        What matters is in the row's own dollars, |exposure| * capacity * risk_aversion * weight,
-        against the same for its largest hedge, so the shared price of the row cancels. An option
-        that could move the objective by cents does not refuse the request: the solver leaves it at
-        zero, and verification reprices the result as it is.
+        What matters is absolute: |exposure| * capacity, in dollars under the typical shock for that
+        Greek, and not against any other hedge, since a fine hedge can matter beside a coarse one,
+        and with nothing able to trade nothing can matter. Anything less does not refuse the
+        request: the solver just does not see its effect on that row, and verification reprices
+        whatever results. A request's own weights are not used, since a band needs the instrument
+        whatever its weight.
         """
         config = self.problem.config
         for target in self.targets:
@@ -517,23 +522,19 @@ class _Program:
             if unpriced and target.lower is None and target.upper is None:
                 continue
             scale = self._row_scale(target)
-            reach = [
-                abs(self._exposure_column(target, row))
-                * max(row.buy_total_cap, row.sell_total_cap)
-                * row.candidate.lot_size
-                for row in self.usable
-            ]
-            largest = max(reach, default=0.0)
-            for row, row_reach in zip(self.usable, reach, strict=True):
-                coefficient = abs(self._exposure_column(target, row)) / scale
+            dollars_per_unit = DEFAULT_WEIGHTS[target.greek] or 1.0
+            for row in self.usable:
+                exposure = abs(self._exposure_column(target, row))
+                capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
+                reach = exposure * capacity * dollars_per_unit
                 if (
-                    0.0 < coefficient < _HIGHS_SMALL_MATRIX_VALUE
-                    and row_reach >= _MATERIAL_SHARE_OF_REACH * largest
+                    0.0 < exposure / scale < _HIGHS_SMALL_MATRIX_VALUE
+                    and reach >= _MATERIAL_REACH_DOLLARS
                 ):
                     raise SolverRangeError(
                         f"{row.candidate.instrument.describe()} is too small against the rest of "
                         f"the {target.greek.value} row for the solver to see it, though it could "
-                        f"matter at capacity, with {self._book_description()}"
+                        f"make about ${reach:,.0f} at capacity, with {self._book_description()}"
                     )
         for limit in constraints:
             for side in (np.asarray(limit.lb), np.asarray(limit.ub)):
@@ -1040,8 +1041,12 @@ def verify_proposal(
             violations.append(f"{target.greek.value} {actual:.4f} above {target.upper}")
 
     worst_scenario = 0.0
-    if problem.scenarios:
-        repriced = book_scenario_pnl(hedged, snapshot, problem.scenarios)
+    scenario_gross = 0.0
+    if problem.scenarios and hedged:
+        units = scenario_pnl_matrix([p.instrument for p in hedged], snapshot, problem.scenarios)
+        quantities = np.array([p.quantity for p in hedged], dtype=np.float64)
+        repriced = units @ quantities
+        scenario_gross = float(np.max(np.abs(units) @ np.abs(quantities), initial=0.0))
         for scenario, value in zip(problem.scenarios, repriced, strict=True):
             expected = predicted_scenario[scenario.name]
             if not (np.isfinite(value) and np.isfinite(expected)):
@@ -1049,11 +1054,20 @@ def verify_proposal(
                 continue
             worst_scenario = max(worst_scenario, abs(float(value) - expected))
 
-    # Dollars of tolerance: a small fraction of a cent per dollar of exposure, from float error.
+    # Dollars of tolerance: a small fraction of a cent per dollar of what remains, or the float
+    # error of adding up the positions, which on a huge offset book is far larger than that.
     finite_predicted = [abs(v) for v in predicted.values() if np.isfinite(v)]
     finite_scenarios = [abs(v) for v in predicted_scenario.values() if np.isfinite(v)]
-    scale = 1e-6 * max(1.0, sum(finite_predicted))
-    scenario_scale = 1e-6 * max(1.0, sum(finite_scenarios))
+    gross = sum(
+        abs(float(getattr(line.exposure, target.greek.value)))
+        for target in problem.targets
+        for line in book.lines
+        if line.position.instrument.underlying == target.underlying
+    )
+    scale = max(1e-6 * max(1.0, sum(finite_predicted)), _FLOAT_NOISE_PER_GROSS_DOLLAR * gross)
+    scenario_scale = max(
+        1e-6 * max(1.0, sum(finite_scenarios)), _FLOAT_NOISE_PER_GROSS_DOLLAR * scenario_gross
+    )
     passed = worst_greek <= scale and worst_scenario <= scenario_scale and not violations
     return VerificationReport(passed, worst_greek, worst_scenario, tuple(violations))
 

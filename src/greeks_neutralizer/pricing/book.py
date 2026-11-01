@@ -399,6 +399,12 @@ def value_book(positions: Sequence[Position], snapshot: MarketSnapshot) -> BookV
                     f"EXPIRED {instrument.describe()} qty {position.quantity}: "
                     "has settled and carries no risk; remove it"
                 )
+            if instrument.kind is LinearKind.PROXY:
+                issues.append(
+                    f"PROXY_MARK {instrument.describe()} qty {position.quantity}: marked at spot "
+                    "times its delta ratio, which is its exposure and not its market price, so "
+                    "read its value with care"
+                )
         lines.append(line)
         by_underlying[underlying] = by_underlying.get(underlying, Exposure()) + line.exposure
 

@@ -48,7 +48,7 @@ From `pricing.book.Exposure`, for the whole position, with `size = quantity * mu
 
 | Field | Definition |
 |---|---|
-| `value` | `size * price`. Zero for a future, which has no value at inception. |
+| `value` | `size * price`. Zero for a future, which has no value at inception. A proxy's price here is spot times its delta ratio, which is its exposure and not its market price, and any valuation holding one carries a `PROXY_MARK` issue. |
 | `delta_shares` | `size * delta` |
 | `delta_dollars` | `delta_shares * spot` |
 | `gamma_shares` | `size * gamma`: change in `delta_shares` per $1 of spot |

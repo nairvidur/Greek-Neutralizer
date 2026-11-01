@@ -41,11 +41,13 @@ from greeks_neutralizer.hedging.problem import (
     GreekTarget,
     HedgeCandidate,
     HedgeConfig,
+    HedgeLeg,
     HedgeProblem,
 )
 from greeks_neutralizer.pricing.black import black_greeks
+from greeks_neutralizer.pricing.book import value_book
 from greeks_neutralizer.risk.measures import RiskLimit, expiry_ladder, liquidity_adjusted_cost
-from greeks_neutralizer.schema import parse_hedge_request
+from greeks_neutralizer.schema import parse_book, parse_hedge_request, parse_market
 from greeks_neutralizer.service.app import create_app
 from greeks_neutralizer.workflow import AuditLog, ProposalStore
 from tests.conftest import AS_OF, euro, flat_snapshot
@@ -1092,36 +1094,135 @@ def test_cvar_past_what_the_solver_can_read_is_not_called_infeasible(tmp_path):
     assert "book size, spot, and multiplier" in body["error"]
 
 
-def test_an_instrument_too_small_for_the_solver_to_see_is_refused_by_name(tmp_path):
-    # Stock at $100 of delta a share, beside a future of about 1e8 a contract, with a book far past
-    # both, puts the stock near 1e-10 on the row. With 10 futures on offer against 100,000 shares,
-    # the stock can do 1% of what the future can: 1e7 of delta against 1e9.
-    request = _big_book_request(10**12, stock_only=True)
-    expiry = (DEFAULT_AS_OF + timedelta(days=30)).isoformat()
+def _stock_beside_a_giant_future(book_shares, *, future_lots, stock_shares, band=None):
+    # A future of 1e6 a point is about 1e8 of delta a contract, against $100 a share for the stock.
+    request = example_request()
+    stock = request["candidates"][0]
+    request["book"] = [{"instrument": stock["instrument"], "quantity": book_shares}]
+    request["run_stability"] = False
+    request["scenarios"] = []
+    request["config"] = {"risk_aversion": 1.0}
+    request["targets"] = [{"underlying": "XYZ", "greek": "delta_dollars", **(band or {})}]
+    stock["quote"].update(bid_size=stock_shares, ask_size=stock_shares)
     future = {
         "type": "linear",
         "symbol": "XYF",
         "underlying": "XYZ",
         "kind": "future",
         "multiplier": 1e6,
-        "expiry": expiry,
+        "expiry": (DEFAULT_AS_OF + timedelta(days=30)).isoformat(),
     }
     quote = {
-        **request["candidates"][0]["quote"],
+        **stock["quote"],
         "bid": 100.4,
         "ask": 100.42,
-        "bid_size": 10,
-        "ask_size": 10,
+        "bid_size": future_lots,
+        "ask_size": future_lots,
     }
-    request["candidates"].append({"instrument": future, "quote": quote})
-    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    request["candidates"] = [stock, {"instrument": future, "quote": quote}]
+    return request
+
+
+GIANT_FUTURE_BOOKS = {
+    # Once a false proof of infeasibility: this band is reachable, as the unbanded hedge shows.
+    "banded": _stock_beside_a_giant_future(
+        -(10**9 + 500_000),
+        future_lots=5000,
+        stock_shares=1_000_000,
+        band={"lower": -1e6, "upper": 1e6},
+    ),
+    "unbanded": _stock_beside_a_giant_future(
+        -(10**9 + 500_000), future_lots=5000, stock_shares=1_000_000
+    ),
+    # Once 30 shares and 5,000 futures, reported as optimal, with the stock worth using in full.
+    "largest-book": _stock_beside_a_giant_future(
+        -(10**12), future_lots=100_000, stock_shares=100_000
+    ),
+}
+
+
+@pytest.mark.parametrize("request_body", GIANT_FUTURE_BOOKS.values(), ids=GIANT_FUTURE_BOOKS)
+def test_a_material_instrument_too_small_for_the_solver_is_refused_by_name(tmp_path, request_body):
+    client = _client(tmp_path)
+    response = client.post("/v1/hedge", headers=ALICE, json=request_body)
     assert response.status_code == 422, response.text
-    error = response.json()["error"]
-    assert "too small" in error
-    assert "book size, spot, and multiplier" in error
-    # The same two instruments against an ordinary book are not refused.
-    request["book"][0]["quantity"] = 10
-    assert _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).status_code == 200
+    body = response.json()
+    assert body["type"] == "validation"
+    assert "XYZ (spot) is too small" in body["error"]
+    assert "book size, spot, and multiplier" in body["error"]
+    frontier = client.post("/v1/frontier", headers=ALICE, json=request_body)
+    assert frontier.status_code == 200, frontier.text
+    solves = [p for p in frontier.json()["points"] if p["label"].startswith("risk aversion")]
+    assert {p["status"] for p in solves} == {"out_of_range"}
+
+
+def test_the_same_two_instruments_are_fine_against_an_ordinary_book(tmp_path):
+    request = _stock_beside_a_giant_future(-10_000, future_lots=5000, stock_shares=1_000_000)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    assert [leg["quantity"] for leg in response.json()["legs"]] == [10_000]
+
+
+def test_nothing_able_to_trade_cannot_be_refused_for_being_too_small():
+    # The far option has a vega near 1e-29 and no capacity, like the other one. This is the
+    # partial coverage path: one blocked underlying must not cost the whole answer a refusal.
+    candidates = tuple(
+        HedgeCandidate(
+            euro("call", strike, days), Quote(bid, ask, 100, 100, AS_OF), max_buy=0, max_sell=0
+        )
+        for strike, days, bid, ask in ((100.0, 60, 4.5, 4.6), (150.0, 7, 0.01, 0.02))
+    )
+    problem = HedgeProblem(
+        (Position(euro("call", 100, 30), -10),),
+        candidates,
+        (GreekTarget("XYZ", GreekName.VEGA),),
+    )
+    proposal = solve_hedge(problem, flat_snapshot())
+    assert proposal.status.value == "partial_coverage"
+    assert proposal.legs == ()
+    assert any("NO_USABLE_CANDIDATES" in issue for issue in proposal.issues)
+
+
+def test_float_error_on_a_huge_offset_book_is_not_a_failed_verification():
+    # 4e9 + 7 shares hedged down to under $50 with a future of about 1e8 a contract and some stock.
+    # About 8e11 of gross delta carries float error like the 6.1e-05 reported from this book, an
+    # HTTP 500 telling the user to report a bug, when what remains would only have allowed 5e-05.
+    request = _stock_beside_a_giant_future(4 * 10**9 + 7, future_lots=5000, stock_shares=10_000)
+    problem, snapshot, _ = parse_hedge_request(request)
+    stock, future = (candidate.instrument for candidate in problem.candidates)
+    book_delta = value_book(problem.book, snapshot).by_underlying["XYZ"].delta_dollars
+    future_delta = value_book([Position(future, 1)], snapshot).by_underlying["XYZ"].delta_dollars
+    futures = -round(book_delta / future_delta)
+    remainder = book_delta + futures * future_delta
+    shares = -round(remainder / 100.0)
+    legs = (
+        HedgeLeg(stock, shares, 100.01, shares * 100.0, 0.0, "stock"),
+        HedgeLeg(future, futures, 100.4, 0.0, 0.0, "future"),
+    )
+    hedged = value_book(
+        [*problem.book, Position(stock, shares), Position(future, futures)], snapshot
+    )
+    after = hedged.by_underlying["XYZ"].delta_dollars
+    assert abs(after) <= 50.0
+    within_float = {("XYZ", "delta_dollars"): after + 6.1e-05}
+    assert optimizer.verify_proposal(problem, snapshot, legs, within_float, {}).passed
+    # A dollar is not float error at this size, where float error is under a millionth of that.
+    beyond_float = {("XYZ", "delta_dollars"): after + 1.0}
+    assert not optimizer.verify_proposal(problem, snapshot, legs, beyond_float, {}).passed
+
+
+def test_verification_still_catches_a_small_error_on_an_ordinary_book():
+    # The gross-exposure allowance is only for float error. A cent off is not float error.
+    problem, snapshot, _ = parse_hedge_request(example_request())
+    proposal = solve_hedge(problem, snapshot)
+    predicted = {(line.underlying, line.greek): line.after for line in proposal.residuals}
+    scenarios = dict(proposal.scenario_pnl_after)
+    assert optimizer.verify_proposal(problem, snapshot, proposal.legs, predicted, scenarios).passed
+    off = {key: value + 0.01 for key, value in predicted.items()}
+    assert not optimizer.verify_proposal(problem, snapshot, proposal.legs, off, scenarios).passed
+    # Scenario P&L here is tens of thousands, so it has a few cents of room, and a dollar is out.
+    worse = {name: value + 1.0 for name, value in scenarios.items()}
+    assert not optimizer.verify_proposal(problem, snapshot, proposal.legs, predicted, worse).passed
 
 
 def test_a_solver_blind_to_an_instrument_cannot_read_as_verified(monkeypatch):
@@ -1154,25 +1255,26 @@ DGV = tuple(
 )
 
 
-def _strike_grid_hedge(spot, step, candidates_kwargs=None, **config):
+def _strike_grid_hedge(spot, step, candidates_kwargs=None, *, lots=50, **config):
     # Eight expiries, and strikes from about 73% to 133% of spot, on the shape of a real chain.
     strikes = np.arange(round(spot * 0.73 / step) * step, spot * 1.34, step)
     days = (7, 14, 30, 45, 60, 90, 120, 180)
     kwargs = candidates_kwargs or {"max_buy": 5000, "max_sell": 5000}
     candidates = _strike_grid_candidates(spot, strikes, days, **kwargs)
     book = (
-        Position(euro("call", float(strikes[len(strikes) // 2]), 30), -50),
-        Position(euro("put", float(strikes[len(strikes) // 3]), 30), -50),
+        Position(euro("call", float(strikes[len(strikes) // 2]), 30), -lots),
+        Position(euro("put", float(strikes[len(strikes) // 3]), 30), -lots),
     )
     problem = HedgeProblem(book, candidates, DGV, (), HedgeConfig(max_legs=6, **config))
     return solve_hedge(problem, flat_snapshot(spot=spot))
 
 
+@pytest.mark.parametrize("lots", [50, 500, 5000])
 @pytest.mark.parametrize(("spot", "step"), [(6000.0, 25.0), (600.0, 2.5), (150.0, 1.0)])
-def test_a_real_strike_grid_with_depth_gets_a_hedge(spot, step):
+def test_a_real_strike_grid_with_depth_gets_a_hedge(spot, step, lots):
     # Deep options here have gamma and vega under 1e-9 of the largest on their rows, and at 5,000
     # lots these requests were refused for a size the book does not have, for cents at stake.
-    proposal = _strike_grid_hedge(spot, step)
+    proposal = _strike_grid_hedge(spot, step, lots=lots)
     assert 1 <= len(proposal.legs) <= 6
     assert proposal.verification.passed
 
@@ -1402,3 +1504,64 @@ def test_the_cli_shows_the_exclusion(tmp_path, capfd):
     assert "1 candidates excluded" in out
     assert main(["hedge", "--request", str(path), "--full"]) == 0
     assert "the market implies" in capfd.readouterr().out
+
+
+# --- A proxy's mark is called what it is ----------------------------------------------------------
+
+
+def _proxy_market_and_book():
+    proxy = {
+        "type": "linear",
+        "symbol": "SPXL",
+        "underlying": "XYZ",
+        "kind": "proxy",
+        "delta_ratio": 0.1,
+        "basis_vol": 0.05,
+    }
+    market = example_market()
+    market["underlyings"]["XYZ"]["spot"] = 6000.0
+    return market, [{"instrument": proxy, "quantity": 1000}]
+
+
+@pytest.mark.parametrize(
+    ("path", "extra"),
+    [
+        ("/v1/value", {}),
+        ("/v1/ladder", {}),
+        ("/v1/limits", {"limits": [{"metric": "delta_shares", "lower": -1e9, "upper": 1e9}]}),
+        ("/v1/decay", {"underlying": "XYZ", "days": [1]}),
+        ("/v1/stress", {}),
+        ("/v1/grid", {}),
+    ],
+)
+def test_a_proxy_in_the_book_is_named_as_marked_at_its_ratio(tmp_path, path, extra):
+    market, book = _proxy_market_and_book()
+    payload = {"book": book, "market": market, **extra}
+    response = _client(tmp_path).post(path, headers=ALICE, json=payload)
+    assert response.status_code == 200, response.text
+    marks = [i for i in response.json()["issues"] if i.startswith("PROXY_MARK")]
+    assert len(marks) == 1
+    assert "SPXL" in marks[0]
+    assert "spot times its delta ratio" in marks[0]
+
+
+def test_the_mark_itself_is_spot_times_the_ratio():
+    # 1,000 units at 6000 * 0.1, the convention documented, and not the fund's 200 quote.
+    market, book = _proxy_market_and_book()
+    valued = value_book(parse_book(book), parse_market(market))
+    assert valued.total_value == pytest.approx(600_000.0)
+
+
+def test_a_proposal_holding_or_trading_a_proxy_says_how_it_is_marked(tmp_path):
+    market, book = _proxy_market_and_book()
+    request = _spxl_request()
+    request["book"] = [*request["book"], *book]
+    request["market"] = market
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert any(i.startswith("PROXY_MARK") and "SPXL" in i for i in body["issues"])
+
+
+def test_a_stock_has_no_proxy_mark_issue(tmp_path):
+    payload = {"book": HUNDRED_SHARES, "market": example_market()}
+    body = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload).json()
+    assert body["issues"] == []

@@ -73,14 +73,14 @@ Every contract-sized leg has a hard cap, `max_lots_per_leg`, regardless of the o
 
 Before any of this, candidate quotes are compared with the model.
 A stock or future quote is compared with what the market implies instead: spot times its delta ratio, or the forward for a future, using the market's own carry.
-A proxy skips this, because it has no market reference: a leveraged fund at 200 with a delta ratio of 0.1 on a spot of 6000 is correctly priced, and its price says nothing about its exposure.
-A proposal using a proxy carries a `QUOTE_UNCHECKED` issue naming it, so the approver knows.
-Its mid must be within 25% of that, or the candidate is excluded with the reason, and with nothing else usable the status is `no_usable_candidates`.
+A stock or future's mid must be within 25% of that, or the candidate is excluded with the reason, and with nothing else usable the status is `no_usable_candidates`.
 The 25% is judgment, not measurement.
 It has to catch a wrong spot, a stale or wrong-symbol quote, or a unit mistake, such as a stock at 200 or 10 against a spot of 100, while a correct quote must never trip it.
 Spot and quotes are near-simultaneous, since quotes older than the age gate are already out, so only a violent move inside that window separates them.
 A single-stock gap or a stale index print could reach 5%, and the market-wide circuit breaker sits at 20%, so a tighter figure could refuse a correct quote.
 A smaller error slips through, so this is a check on gross mistakes rather than a pricing control.
+A proxy skips this, because it has no market reference: a leveraged fund at 200 with a delta ratio of 0.1 on a spot of 6000 is correctly priced, and its price says nothing about its exposure.
+A proposal using a proxy carries a `QUOTE_UNCHECKED` issue naming it, so the approver knows.
 A single far-off quote is excluded, and broad disagreement raises, since it points to bad market data such as a vol in the wrong units.
 Repricing cannot catch that, because it uses the same market.
 
