@@ -1,0 +1,71 @@
+{
+  "code_version": "2.0.0a1",
+  "machine": "arm64",
+  "system": "macOS-27.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "note": "Single process. p99 from few repeats is close to the maximum, not a real tail.",
+  "cases": {
+    "kernel_100k_vectorized": {
+      "repeats": 20,
+      "p50_ms": 8.301916499476647,
+      "p99_ms": 11.217277983014352,
+      "max_ms": 11.807125003542751
+    },
+    "value_100k_european_contracts": {
+      "repeats": 3,
+      "p50_ms": 459.3106659958721,
+      "p99_ms": 459.85517947614426,
+      "max_ms": 459.8662919961498,
+      "budget": "under 1000 ms"
+    },
+    "value_5k_european_contracts": {
+      "repeats": 10,
+      "p50_ms": 23.232542000187095,
+      "p99_ms": 23.414295002876315,
+      "max_ms": 23.4187500027474
+    },
+    "value_1k_american_contracts": {
+      "repeats": 3,
+      "p50_ms": 301.2508749961853,
+      "p99_ms": 302.76342366152676,
+      "max_ms": 302.79429200163577
+    },
+    "value_5k_american_contracts": {
+      "repeats": 2,
+      "p50_ms": 1608.8803955026378,
+      "p99_ms": 1773.9447967556043,
+      "max_ms": 1777.3134580056649
+    },
+    "stress_5k_positions_7_scenarios": {
+      "repeats": 3,
+      "p50_ms": 195.19266600400442,
+      "p99_ms": 195.67450064132572,
+      "max_ms": 195.68433400127105
+    },
+    "hedge_100_candidates": {
+      "repeats": 5,
+      "p50_ms": 30.49079199990956,
+      "p99_ms": 34.57337304134853,
+      "max_ms": 34.73270800168393
+    },
+    "hedge_1000_candidates": {
+      "repeats": 5,
+      "p50_ms": 147.71462499629706,
+      "p99_ms": 164.41005436587147,
+      "max_ms": 165.05329100618837
+    },
+    "hedge_5000_candidates": {
+      "repeats": 3,
+      "p50_ms": 593.99854199728,
+      "p99_ms": 607.9151946798083,
+      "max_ms": 608.1992079998599,
+      "budget": "under 1000 ms at p99"
+    },
+    "hedge_100_candidates_with_stability": {
+      "repeats": 2,
+      "p50_ms": 144.93468700311496,
+      "p99_ms": 144.95941142413358,
+      "max_ms": 144.95991600415437
+    }
+  }
+}

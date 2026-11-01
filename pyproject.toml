@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "greeks-neutralizer"
+dynamic = ["version"]
+description = "Options hedge decision and risk platform: pricing, surfaces, constrained hedge optimization, stress, and evidence."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["options", "greeks", "hedging", "risk", "volatility-surface", "derivatives"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = ["numpy>=1.26", "scipy>=1.12"]
+
+[project.optional-dependencies]
+service = ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2.8"]
+calendars = ["exchange-calendars>=4.5"]
+
+[project.scripts]
+gn = "greeks_neutralizer.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-randomly>=3.15",
+    "hypothesis>=4",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "QuantLib>=1.34",
+    "httpx2>=0.1",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
+    "exchange-calendars>=4.5",
+    "build>=1.2",
+]
+
+[tool.hatch.version]
+path = "src/greeks_neutralizer/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/greeks_neutralizer"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+markers = [
+    "slow: long-running",
+    "reference: differential tests against QuantLib",
+]
+filterwarnings = [
+    "error",
+    # Raised inside exchange-calendars by pandas 3.1, outside this package's control.
+    "ignore:Series.values returning an ndarray",
+]
+xfail_strict = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PIE", "RET", "PTH", "NPY"]
+ignore = ["RET505"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "exchange_calendars.*"]
+ignore_missing_imports = true

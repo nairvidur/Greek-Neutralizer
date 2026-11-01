@@ -1,0 +1,70 @@
+FFFFFFFFFFFF                                                             [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert not True
+     +  where True = NeutralizationResult(success=True, quantities=[nan, nan, nan], net_greeks=Greeks(Δ=+nan, Γ=+nan, V=+nan, Θ=+nan, ρ=+na...07, $=+6.8343), Greeks(Δ=+0.608050, Γ=+0.014789, V=+0.332743, Θ=-0.024906, ρ=+0.365358, $=+12.0907)], error_message='').success
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:34: AssertionError: assert not True
+E   Failed: DID NOT RAISE ValueError
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:38: Failed: DID NOT RAISE ValueError
+E   Failed: DID NOT RAISE ValueError
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:43: Failed: DID NOT RAISE ValueError
+E   Failed: DID NOT RAISE ValueError
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:48: Failed: DID NOT RAISE ValueError
+E   assert 0.0 == 20.0 ± 2.0e-05
+      
+      comparison failed
+      Obtained: 0.0
+      Expected: 20.0 ± 2.0e-05
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:53: assert 0.0 == 20.0 ± 2.0e-05
+E   assert 0.0 == 24.877057549928594 ± 2.5e-05
+      
+      comparison failed
+      Obtained: 0.0
+      Expected: 24.877057549928594 ± 2.5e-05
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:58: assert 0.0 == 24.877057549928594 ± 2.5e-05
+E   assert 0.0013499672813147567 == 0.00134989803...0957 ± 1.0e-12
+      
+      comparison failed
+      Obtained: 0.0013499672813147567
+      Expected: 0.0013498980316300957 ± 1.0e-12
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:63: assert 0.0013499672813147567 == 0.00134989803...0957 ± 1.0e-12
+E   assert 0.5629029382541009 == 0.5628833922806109 ± 1.0e-08
+      
+      comparison failed
+      Obtained: 0.5629029382541009
+      Expected: 0.5628833922806109 ± 1.0e-08
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:72: assert 0.5629029382541009 == 0.5628833922806109 ± 1.0e-08
+E   assert -9.975431054309802e-16 >= 0
+     +  where -9.975431054309802e-16 = min(<generator object test_far_otm_price_never_negative.<locals>.<genexpr> at 0x108ed4f40>)
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:76: assert -9.975431054309802e-16 >= 0
+E   AssertionError: assert 65.83083538501562 != 65.83083538501562 ± 6.6e-05
+     +  where 65.83083538501562 = Greeks(Δ=+0.000000, Γ=-0.000000, V=+0.000000, Θ=-0.079840, ρ=-0.026670, $=+65.8308).price
+     +    where Greeks(Δ=+0.000000, Γ=-0.000000, V=+0.000000, Θ=-0.079840, ρ=-0.026670, $=+65.8308) = NeutralizationResult(success=True, quantities=[3.314487261502692, -25.012328400910956, 12.74121566337612], net_greeks=...07, $=+6.8343), Greeks(Δ=+0.608050, Γ=+0.014789, V=+0.332743, Θ=-0.024906, ρ=+0.365358, $=+12.0907)], error_message='').net_greeks
+     +  and   65.83083538501562 ± 6.6e-05 = <function approx at 0x108cf49a0>(65.83083538501562)
+     +    where <function approx at 0x108cf49a0> = pytest.approx
+     +    and   65.83083538501562 = Greeks(Δ=+5.629029, Γ=+0.262649, V=+1.969864, Θ=-0.391905, ρ=+1.242680, $=+65.8308).price
+     +      where Greeks(Δ=+5.629029, Γ=+0.262649, V=+1.969864, Θ=-0.391905, ρ=+1.242680, $=+65.8308) = NeutralizationResult(success=True, quantities=[3.314487261502692, -25.012328400910956, 12.74121566337612], net_greeks=...07, $=+6.8343), Greeks(Δ=+0.608050, Γ=+0.014789, V=+0.332743, Θ=-0.024906, ρ=+0.365358, $=+12.0907)], error_message='').portfolio_greeks
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:81: AssertionError: assert 65.83083538501562 != 65.83083538501562 ± 6.6e-05
+E   assert 5.629029382541009 == 562.9 ± 1
+      
+      comparison failed
+      Obtained: 5.629029382541009
+      Expected: 562.9 ± 1
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:86: assert 5.629029382541009 == 562.9 ± 1
+E   AssertionError: assert False
+     +  where False = NeutralizationResult(success=False, quantities=None, net_greeks=None, portfolio_greeks=None, hedge_greeks=None, error_message='Exactly 3 hedging instruments required, got 4.').success
+     +    where NeutralizationResult(success=False, quantities=None, net_greeks=None, portfolio_greeks=None, hedge_greeks=None, error_message='Exactly 3 hedging instruments required, got 4.') = solve_neutralization(100, 0.05, [OptionContract(option_type='call', strike=100, expiry=0.25, iv=0.3, quantity=10, side='long')], [OptionContract(option_type='put', strike=95, expiry=0.5, iv=0.32, quantity=1, side='long'), OptionContract(option_typ..., quantity=1, side='long'), OptionContract(option_type='put', strike=90, expiry=0.5, iv=0.33, quantity=1, side='long')])
+/Users/shreejitverma/github/Greek-Neutralizer/.claude/worktrees/production-platform/tests/test_legacy_red.py:91: AssertionError: assert False
+=========================== short test summary info ============================
+FAILED tests/test_legacy_red.py::test_nan_iv_must_not_report_success - Assert...
+FAILED tests/test_legacy_red.py::test_unknown_option_type_rejected - Failed: ...
+FAILED tests/test_legacy_red.py::test_unknown_side_rejected - Failed: DID NOT...
+FAILED tests/test_legacy_red.py::test_negative_quantity_rejected - Failed: DI...
+FAILED tests/test_legacy_red.py::test_expired_itm_keeps_intrinsic - assert 0....
+FAILED tests/test_legacy_red.py::test_zero_vol_itm_is_discounted_intrinsic - ...
+FAILED tests/test_legacy_red.py::test_cdf_accuracy_to_machine_precision - ass...
+FAILED tests/test_legacy_red.py::test_delta_matches_finite_difference_of_own_price
+FAILED tests/test_legacy_red.py::test_far_otm_price_never_negative - assert -...
+FAILED tests/test_legacy_red.py::test_net_value_includes_hedge_premium - Asse...
+FAILED tests/test_legacy_red.py::test_contract_multiplier_in_position_delta
+FAILED tests/test_legacy_red.py::test_can_hedge_with_underlying_or_more_than_three_instruments
+12 failed in 0.01s

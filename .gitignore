@@ -31,3 +31,17 @@ htmlcov/
 # Distribution
 *.tar.gz
 *.whl
+
+# Tooling
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+dist/
+# Vendor market data is never committed: redistribution is license-restricted.
+vendor_data/
+
+# Local run artifacts
+gn_audit.jsonl
+nohup.out
