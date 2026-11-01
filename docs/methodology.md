@@ -68,7 +68,12 @@ Fine-grained linear hedges with a multiplier of 1 are solved as continuous and t
 The reported gap compares the final objective with the LP bound, so an incumbent at the time limit cannot pass as optimal.
 With `max_legs` or a ticket cost, the LP bound is weak because binaries relax, and the gap overstates the true shortfall.
 
-CVaR uses the Rockafellar-Uryasev linearization over full-revaluation scenarios.
+CVaR uses the Rockafellar-Uryasev linearization over full-revaluation scenarios, floored at zero, so protection earns nothing once the tail loss is gone.
+Every contract-sized leg has a hard cap, `max_lots_per_leg`, regardless of the objective.
+
+Before any of this, candidate quotes are compared with the model.
+A single far-off quote is excluded, and broad disagreement raises, since it points to bad market data such as a vol in the wrong units.
+Repricing cannot catch that, because it uses the same market.
 
 ## Stability
 
@@ -78,15 +83,15 @@ Each perturbation re-solves in a slightly different market: spot +/-0.25%, vol +
 - `regret_ratio`: how much worse today's hedge is than the re-solved one in that market, as a share of the benefit of hedging.
 - `condition_number`: for inspection only.
 
-A proposal is `unstable` only if both the trade moves and the move costs real benefit.
+A proposal is `unstable` if the trade moves and the move costs real benefit, or if under any perturbation the held hedge is no longer feasible.
 Near-substitutes can swap freely: on one expiry, gamma and vega are exactly proportional, so a sensible hedge can have a singular Greek matrix.
-On the reconciled SPX hedge the trade moves 77% of its contracts, but holding it gives up only 4.5% of the benefit.
+On the reconciled SPX hedge the trade moves 81% of its contracts, but holding it gives up only 5.4% of the benefit.
 
 ## Scenarios and risk
 
 Every scenario reprices the book in full.
 Vol shocks are set at a 30-day reference and scale with tenor as `(30d / tau)^power`, capped at 3 times.
-`taylor_vs_full` shows how far Greeks are from the truth: on the SPX hedge the second-order expansion is wrong by up to $4.7M in the crash scenarios, which is why stress uses repricing.
+`taylor_vs_full` shows how far Greeks are from the truth, using the vol change each scenario actually applies to each contract: on the SPX hedge the second-order expansion is wrong by up to $3.1M in the crash scenarios, which is why stress uses repricing.
 
 VaR is historical simulation, ES averages the tail, and Kupiec's test backtests exceptions.
 Attribution decomposes P&L by start-of-period Greeks, and unexplained P&L is the control metric to track daily.

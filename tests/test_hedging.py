@@ -227,7 +227,7 @@ def test_exact_evaluator_reproduces_the_solver_objective(config):
     x = np.asarray(result.x)
     lots = np.round(program._net_lots(x)).astype(np.int64)
     # An incumbent at the time limit can hold offsetting lots, which pay cost and net to nothing.
-    # Reading back the net position is right, so the evaluator should come out lower by exactly that.
+    # Reading back the net position is right, so the evaluator comes out lower by exactly that.
     costs = program._costs()
     wash = 0.0
     for i in range(program.n):

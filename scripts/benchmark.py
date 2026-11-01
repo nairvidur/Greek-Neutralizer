@@ -81,7 +81,7 @@ def universe(n: int) -> tuple[HedgeCandidate, ...]:
         [contract(i, ExerciseStyle.EUROPEAN) for i in range(n)], SNAPSHOT
     ).greeks.price
     for i in range(n):
-        mid = max(float(prices[i]), 0.1)
+        mid = max(float(prices[i]), 0.03)
         out.append(
             HedgeCandidate(
                 contract(i, ExerciseStyle.EUROPEAN),

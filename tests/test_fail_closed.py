@@ -288,6 +288,34 @@ def test_hedge_that_breaks_a_band_after_a_small_move_is_unstable():
     assert json.dumps(data, allow_nan=False)
 
 
+def test_stability_perturbs_the_market_without_tripping_the_quote_gate():
+    # Re-solves shock the market with quotes held fixed, so model and quotes differ on purpose.
+    # Found by the benchmark: this raised "model and quotes disagree" and aborted a good proposal.
+    vega_of = {}
+    universe = []
+    for strike in (80.0, 85.0, 90.0, 95.0, 105.0, 110.0, 115.0, 120.0):
+        right = "put" if strike < 100 else "call"
+        candidate = fair(right, strike, 30, half=0.01)
+        universe.append(candidate)
+        vega_of[strike] = candidate.quote.mid
+    p = solve_hedge(
+        HedgeProblem(BOOK, (stock(), *universe), DGV),
+        flat_snapshot(),
+        run_stability=True,
+    )
+    assert p.stability is not None
+    # A full gate would have compared these same quotes against a shocked market.
+    from greeks_neutralizer.hedging.optimizer import _filter_candidates
+    from greeks_neutralizer.risk.scenarios import Scenario, shock_snapshot
+
+    problem = HedgeProblem(BOOK, (stock(), *universe), DGV)
+    shocked = shock_snapshot(flat_snapshot(), Scenario("big", vol_shock=0.10))
+    with pytest.raises(MarketDataError, match="disagree"):
+        _filter_candidates(problem, shocked)
+    usable, _ = _filter_candidates(problem, shocked, compare_quotes_to_model=False)
+    assert len(usable) == len(universe) + 1
+
+
 def _verified_proposal(stability=True):
     problem, snapshot, _ = parse_hedge_request(example_request())
     return solve_hedge(problem, snapshot, run_stability=stability)

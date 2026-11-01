@@ -1,0 +1,71 @@
+{
+  "code_version": "2.0.0a1",
+  "machine": "arm64",
+  "system": "macOS-27.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "note": "Single process. p99 from few repeats is close to the maximum, not a real tail.",
+  "cases": {
+    "kernel_100k_vectorized": {
+      "repeats": 20,
+      "p50_ms": 9.836124498178833,
+      "p99_ms": 13.387517020855736,
+      "max_ms": 14.024500000232365
+    },
+    "value_100k_european_contracts": {
+      "repeats": 3,
+      "p50_ms": 496.0718340007588,
+      "p99_ms": 496.4913141801662,
+      "max_ms": 496.49987500015413,
+      "budget": "under 1000 ms"
+    },
+    "value_5k_european_contracts": {
+      "repeats": 10,
+      "p50_ms": 25.298874999862164,
+      "p99_ms": 26.569298029680795,
+      "max_ms": 26.616082999680657
+    },
+    "value_1k_american_contracts": {
+      "repeats": 3,
+      "p50_ms": 337.14466700257617,
+      "p99_ms": 338.51740101803443,
+      "max_ms": 338.54541599794175
+    },
+    "value_5k_american_contracts": {
+      "repeats": 2,
+      "p50_ms": 1668.6681250012043,
+      "p99_ms": 1701.812868661691,
+      "max_ms": 1702.489292001701
+    },
+    "stress_5k_positions_7_scenarios": {
+      "repeats": 3,
+      "p50_ms": 209.10579200062784,
+      "p99_ms": 210.89200566057116,
+      "max_ms": 210.92845900057
+    },
+    "hedge_100_candidates": {
+      "repeats": 5,
+      "p50_ms": 33.05333299795166,
+      "p99_ms": 36.30156363884453,
+      "max_ms": 36.42741699877661
+    },
+    "hedge_1000_candidates": {
+      "repeats": 5,
+      "p50_ms": 156.19887499997276,
+      "p99_ms": 166.39569731836673,
+      "max_ms": 166.7840839982091
+    },
+    "hedge_5000_candidates": {
+      "repeats": 3,
+      "p50_ms": 660.6710830019438,
+      "p99_ms": 679.0748704993894,
+      "max_ms": 679.4504579993372,
+      "budget": "under 1000 ms at p99"
+    },
+    "hedge_100_candidates_with_stability": {
+      "repeats": 2,
+      "p50_ms": 180.37056300090626,
+      "p99_ms": 189.0452574196388,
+      "max_ms": 189.22229199961293
+    }
+  }
+}

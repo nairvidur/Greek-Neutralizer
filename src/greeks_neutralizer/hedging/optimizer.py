@@ -93,9 +93,13 @@ class _Usable:
 
 
 def _filter_candidates(
-    problem: HedgeProblem, snapshot: MarketSnapshot
+    problem: HedgeProblem, snapshot: MarketSnapshot, *, compare_quotes_to_model: bool = True
 ) -> tuple[list[_Usable], list[ExcludedCandidate]]:
-    """Apply quote gates and build per-unit economics. Exclusions carry their reason."""
+    """Apply quote gates and build per-unit economics. Exclusions carry their reason.
+
+    `compare_quotes_to_model=False` is for stability re-solves, which shock the market and hold
+    quotes fixed: there, model and quotes disagree on purpose, and it is not evidence of bad data.
+    """
     config = problem.config
     policy = config.quality_policy()
     excluded: list[ExcludedCandidate] = []
@@ -119,7 +123,7 @@ def _filter_candidates(
             continue
         live.append(candidate)
 
-    live = _model_gates(live, excluded, snapshot, config)
+    live = _model_gates(live, excluded, snapshot, config, compare_quotes_to_model)
 
     exposures = unit_exposures([c.instrument for c in live], snapshot) if live else ()
     usable = [
@@ -134,6 +138,7 @@ def _model_gates(
     excluded: list[ExcludedCandidate],
     snapshot: MarketSnapshot,
     config: HedgeConfig,
+    compare_quotes_to_model: bool = True,
 ) -> list[HedgeCandidate]:
     """Compare each option's quote with the model, which catches errors repricing cannot.
 
@@ -159,14 +164,16 @@ def _model_gates(
             discount = float(market.curve.discount(float(valuation.T[row])))
             forward = float(valuation.forward[row])
             floor = discount * max(contract.right.omega * (forward - contract.strike), 0.0)
+        if valuation.extrapolated[row] and not config.allow_extrapolated_vol:
+            excluded.append(ExcludedCandidate(name, "strike beyond the surface's quotes"))
+            rejected.add(id(candidate))
+            continue
+        if not compare_quotes_to_model:
+            continue
         policy = config.quality_policy()
         flags = assess_quote(quote, snapshot.as_of, intrinsic=floor, policy=policy)
         if QuoteFlag.BELOW_INTRINSIC in flags:
             excluded.append(ExcludedCandidate(name, "unusable quote: below_intrinsic"))
-            rejected.add(id(candidate))
-            continue
-        if valuation.extrapolated[row] and not config.allow_extrapolated_vol:
-            excluded.append(ExcludedCandidate(name, "strike beyond the surface's quotes"))
             rejected.add(id(candidate))
             continue
         gap = abs(float(valuation.greeks.price[row]) - quote.mid)

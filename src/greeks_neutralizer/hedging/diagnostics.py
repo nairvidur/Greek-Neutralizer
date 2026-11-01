@@ -113,7 +113,7 @@ def stability_report(
         held = _penalized_residual(problem.targets, value_book(hedged, shocked).by_underlying)
         drift[perturbation.name] = held - base_residual
         try:
-            moved_usable, _ = _filter_candidates(problem, shocked)
+            moved_usable, _ = _filter_candidates(problem, shocked, compare_quotes_to_model=False)
             book = value_book(problem.book, shocked)
             moved_scenario = book_scenario_pnl(problem.book, shocked, problem.scenarios)
             moved_units = (
