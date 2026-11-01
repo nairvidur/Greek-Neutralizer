@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -34,7 +35,7 @@ from greeks_neutralizer.examples import (
     example_request,
 )
 from greeks_neutralizer.hedging import optimizer
-from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast
+from greeks_neutralizer.hedging.diagnostics import PERTURBATIONS, hedge_decay_forecast
 from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
 from greeks_neutralizer.hedging.problem import (
     GreekName,
@@ -47,7 +48,12 @@ from greeks_neutralizer.hedging.problem import (
 from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.pricing.book import value_book
 from greeks_neutralizer.risk.measures import RiskLimit, expiry_ladder, liquidity_adjusted_cost
-from greeks_neutralizer.schema import parse_book, parse_hedge_request, parse_market
+from greeks_neutralizer.schema import (
+    parse_book,
+    parse_hedge_request,
+    parse_market,
+    proposal_to_json,
+)
 from greeks_neutralizer.service.app import create_app
 from greeks_neutralizer.workflow import AuditLog, ProposalStore
 from tests.conftest import AS_OF, euro, flat_snapshot
@@ -1316,10 +1322,8 @@ def test_ordinary_books_on_a_strike_grid_are_not_refused():
     assert refusals == [], f"{len(refusals)} of {trials} refused"
 
 
-def test_a_re_solve_out_of_range_marks_the_proposal_unstable_rather_than_refusing(monkeypatch):
-    # A market move can take a request past the solver's range when its base solve was fine. That
-    # is grounds not to approve, and not a 422 for a request that has an answer.
-    problem, snapshot, _ = parse_hedge_request(example_request())
+def _re_solves_out_of_range(monkeypatch):
+    # A market move can take a request past the solver's range when its base solve was fine.
     real_check = optimizer._Program._check_solver_range
     calls = []
 
@@ -1330,10 +1334,128 @@ def test_a_re_solve_out_of_range_marks_the_proposal_unstable_rather_than_refusin
         real_check(program, constraints)
 
     monkeypatch.setattr(optimizer._Program, "_check_solver_range", after_the_base_solve)
+
+
+def test_a_re_solve_out_of_range_is_its_own_outcome(monkeypatch):
+    # Unknown is neither a 422 for a request that has an answer, nor unstable, nor called stable.
+    problem, snapshot, _ = parse_hedge_request(example_request())
+    _re_solves_out_of_range(monkeypatch)
+    proposal = solve_hedge(problem, snapshot, run_stability=True)
+    assert proposal.status.value != "unstable"
+    assert proposal.legs
+    assert proposal.stability.is_stable is False
+    assert proposal.stability.notes == ()
+    assert proposal.stability.regret_ratio != float("inf")
+    assert len(proposal.stability.out_of_range) == len(PERTURBATIONS)
+    incomplete = [i for i in proposal.issues if i.startswith("STABILITY_INCOMPLETE")]
+    assert len(incomplete) == len(PERTURBATIONS)
+    assert "planted" in incomplete[0]
+    assert proposal_to_json(proposal)["stability"]["out_of_range"]
+
+
+def test_a_held_hedge_breaking_its_band_stays_unstable_when_the_re_solve_is_out_of_range(
+    monkeypatch,
+):
+    # The block must survive this path. Gamma cannot be re-tuned with shares, and a band this tight
+    # around today's hedge fits it now and not after a small spot move. That is a fact about the
+    # held hedge, whatever the solver can say.
+    problem, snapshot, _ = parse_hedge_request(example_request())
+    today = solve_hedge(problem, snapshot).after["XYZ"].gamma_1pct
+    request = example_request()
+    request["targets"][1].update(lower=today - 1.0, upper=today + 1.0)
+    problem, snapshot, _ = parse_hedge_request(request)
+    assert solve_hedge(problem, snapshot).legs
+    _re_solves_out_of_range(monkeypatch)
     proposal = solve_hedge(problem, snapshot, run_stability=True)
     assert proposal.status.value == "unstable"
-    assert proposal.legs
-    assert any("planted" in issue for issue in proposal.issues)
+    assert proposal.stability.regret_ratio == float("inf")
+    assert proposal.stability.out_of_range
+
+
+# Reach of a few hundred dollars of typical shock: under the refusal, yet deciding the answer.
+BAND_ONLY_THE_STOCK_REACHES = _stock_beside_a_giant_future(
+    -5_020_589_925, future_lots=5000, stock_shares=500, band={"lower": -1e4, "upper": 1e4}
+)
+
+
+def test_a_band_only_an_unseen_instrument_can_reach_is_not_called_infeasible(tmp_path):
+    # The oracle is a hedge by hand: 5,000 futures and 300 shares sold, repriced from scratch, are
+    # inside both the band and the caps, so "no whole number of lots and shares is" would be false.
+    problem, snapshot, _ = parse_hedge_request(BAND_ONLY_THE_STOCK_REACHES)
+    stock, future = (candidate.instrument for candidate in problem.candidates)
+    hedged = [*problem.book, Position(future, 5000), Position(stock, -300)]
+    assert abs(value_book(hedged, snapshot).by_underlying["XYZ"].delta_dollars) < 1e4
+
+    client = _client(tmp_path)
+    response = client.post("/v1/hedge", headers=ALICE, json=BAND_ONLY_THE_STOCK_REACHES)
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["type"] == "validation"
+    assert "XYZ (spot) is too small" in body["error"]
+    assert "not a proof" in body["error"]
+    frontier = client.post("/v1/frontier", headers=ALICE, json=BAND_ONLY_THE_STOCK_REACHES)
+    assert frontier.status_code == 200, frontier.text
+    statuses = {p["status"] for p in frontier.json()["points"] if p["label"].startswith("risk")}
+    assert statuses == {"out_of_range"}
+
+
+def test_a_better_hedge_the_solver_could_not_see_is_not_reported_as_a_bug(tmp_path):
+    # The oracle: 1,000 futures and every share on offer sold improves on the solver's bound, which
+    # cannot be, so this is what the solver could not see. It was a 500 saying to report a bug.
+    request = _stock_beside_a_giant_future(-1_004_500_000, future_lots=1000, stock_shares=500)
+    client = _client(tmp_path)
+    response = client.post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422, response.text
+    assert response.json()["type"] == "validation"
+    assert "XYZ (spot) is too small" in response.json()["error"]
+    frontier = client.post("/v1/frontier", headers=ALICE, json=request)
+    assert frontier.status_code == 200, frontier.text
+    statuses = [p["status"] for p in frontier.json()["points"]]
+    assert "out_of_range" in statuses
+    assert "infeasible" not in statuses
+
+
+def test_a_lower_bound_miss_by_a_visible_instrument_is_still_reported_as_a_bug(monkeypatch):
+    # The distinction must not swallow a real defect: nothing here is unseen, and the bound is
+    # wrong.
+    problem, snapshot, _ = parse_hedge_request(_stock_only_request())
+    real_solve = optimizer._Program.solve
+
+    def lower(program):
+        return replace(real_solve(program), lower_bound=1e12)
+
+    monkeypatch.setattr(optimizer._Program, "solve", lower)
+    with pytest.raises(VerificationError, match="missed a better hedge"):
+        solve_hedge(problem, snapshot)
+
+
+def test_dust_on_a_real_chain_is_seen_as_dropped_and_still_gets_a_hedge(monkeypatch):
+    # A result that stands is returned with deep options unseen: the rule is about proofs.
+    real_dropped = optimizer._Program._dropped_by_the_solver
+    seen = []
+
+    def recording(program):
+        seen.append(real_dropped(program))
+        return seen[-1]
+
+    monkeypatch.setattr(optimizer._Program, "_dropped_by_the_solver", recording)
+    proposal = _strike_grid_hedge(6000.0, 25.0, lots=5000)
+    assert any(seen)
+    assert 1 <= len(proposal.legs) <= 6
+    assert proposal.verification.passed
+
+
+def test_a_truly_impossible_band_on_a_chain_with_dust_is_a_refusal_not_a_proof(monkeypatch):
+    # The price of the rule, pinned: with deep options unseen, the solver cannot prove this either.
+    # 1e15 of delta is past all of this universe at capacity, about 1e12, so it is truly impossible.
+    spot = 6000.0
+    strikes = np.arange(4400.0, 8000.0, 25.0)
+    candidates = _strike_grid_candidates(spot, strikes, (7, 30, 90), max_buy=5000, max_sell=5000)
+    book = (Position(euro("call", 6000.0, 30), -5000),)
+    band = (GreekTarget("XYZ", GreekName.DELTA, lower=1e15, upper=2e15), *DGV[1:])
+    problem = HedgeProblem(book, candidates, band, (), HedgeConfig())
+    with pytest.raises(SolverRangeError, match="not a proof"):
+        solve_hedge(problem, flat_snapshot(spot=spot))
 
 
 def test_one_frontier_point_out_of_range_leaves_the_others_standing(tmp_path):

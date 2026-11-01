@@ -336,7 +336,9 @@ class StabilityReport:
     market, as a share of the base trade's contracts. `regret_ratio` is how much worse today's hedge
     is than the re-solved one in that market, as a share of the benefit of hedging. `drift` is the
     dollar change in a held hedge's penalized residual. `condition_number` is for inspection only.
-    `hit_time_limit` says a re-solve stopped at the wall-clock backstop.
+    `hit_time_limit` says a re-solve stopped at the wall-clock backstop. `out_of_range` lists the
+    perturbations the solver could not faithfully re-solve: unknown rather than unstable, so such a
+    hedge is not called stable, and does not read as unstable unless `notes` says so too.
     """
 
     condition_number: float
@@ -346,6 +348,7 @@ class StabilityReport:
     is_stable: bool
     notes: tuple[str, ...]
     hit_time_limit: bool = False
+    out_of_range: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

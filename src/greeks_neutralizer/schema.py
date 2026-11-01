@@ -547,6 +547,7 @@ def proposal_to_json(proposal: HedgeProposal) -> dict[str, Any]:
                 k: v if math.isfinite(v) else None for k, v in proposal.stability.drift.items()
             },
             "notes": list(proposal.stability.notes),
+            "out_of_range": list(proposal.stability.out_of_range),
         }
     return {
         "schema_version": SCHEMA_VERSION,

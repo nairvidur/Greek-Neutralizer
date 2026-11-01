@@ -504,6 +504,40 @@ class _Program:
             "book size, spot, and multiplier, and any band or budget"
         )
 
+    def _dropped_by_the_solver(self) -> dict[int, tuple[GreekTarget, float]]:
+        """Candidates with capacity whose coefficient HiGHS reads as zero on a row that counts, by
+        position, with that row and the most they could make at capacity on it.
+
+        While there are any, HiGHS is solving a different problem from the one asked, so a result
+        can be checked but nothing it says about the asked problem can be taken as proved.
+        """
+        config = self.problem.config
+        dropped: dict[int, tuple[GreekTarget, float]] = {}
+        for target in self.targets:
+            unpriced = config.risk_aversion * target.effective_weight == 0.0
+            if unpriced and target.lower is None and target.upper is None:
+                continue
+            scale = self._row_scale(target)
+            dollars_per_unit = DEFAULT_WEIGHTS[target.greek] or 1.0
+            for i, row in enumerate(self.usable):
+                exposure = abs(self._exposure_column(target, row))
+                capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
+                reach = exposure * capacity * dollars_per_unit
+                unseen = reach > 0.0 and exposure / scale < _HIGHS_SMALL_MATRIX_VALUE
+                if unseen and (i not in dropped or reach > dropped[i][1]):
+                    dropped[i] = (target, reach)
+        return dropped
+
+    def _unprovable(self, dropped: dict[int, tuple[GreekTarget, float]]) -> SolverRangeError:
+        i = max(dropped, key=lambda position: dropped[position][1])
+        target, reach = dropped[i]
+        return SolverRangeError(
+            f"{self.usable[i].candidate.instrument.describe()} is too small against the rest of "
+            f"the {target.greek.value} row for the solver to see it, though it could make about "
+            f"${reach:,.0f} at capacity, so its answer here is not a proof either way, with "
+            f"{self._book_description()}"
+        )
+
     def _check_solver_range(self, constraints: list[LinearConstraint]) -> None:
         """Refuse what HiGHS would silently change: a coefficient it drops as zero where that
         matters, or a right-hand side it reads as infinite, which can even give a false proof of
@@ -513,29 +547,16 @@ class _Program:
         Greek, and not against any other hedge, since a fine hedge can matter beside a coarse one,
         and with nothing able to trade nothing can matter. Anything less does not refuse the
         request: the solver just does not see its effect on that row, and verification reprices
-        whatever results. A request's own weights are not used, since a band needs the instrument
-        whatever its weight.
+        whatever results, though it cannot prove anything. A request's own weights are not used,
+        since a band needs the instrument whatever its weight.
         """
-        config = self.problem.config
-        for target in self.targets:
-            unpriced = config.risk_aversion * target.effective_weight == 0.0
-            if unpriced and target.lower is None and target.upper is None:
-                continue
-            scale = self._row_scale(target)
-            dollars_per_unit = DEFAULT_WEIGHTS[target.greek] or 1.0
-            for row in self.usable:
-                exposure = abs(self._exposure_column(target, row))
-                capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
-                reach = exposure * capacity * dollars_per_unit
-                if (
-                    0.0 < exposure / scale < _HIGHS_SMALL_MATRIX_VALUE
-                    and reach >= _MATERIAL_REACH_DOLLARS
-                ):
-                    raise SolverRangeError(
-                        f"{row.candidate.instrument.describe()} is too small against the rest of "
-                        f"the {target.greek.value} row for the solver to see it, though it could "
-                        f"make about ${reach:,.0f} at capacity, with {self._book_description()}"
-                    )
+        material = {
+            i: drop
+            for i, drop in self._dropped_by_the_solver().items()
+            if drop[1] >= _MATERIAL_REACH_DOLLARS
+        }
+        if material:
+            raise self._unprovable(material)
         for limit in constraints:
             for side in (np.asarray(limit.lb), np.asarray(limit.ub)):
                 finite = np.abs(side[np.isfinite(side)])
@@ -549,8 +570,10 @@ class _Program:
         """A candidate at capacity that scores below the LP bound, which no feasible hedge can do.
 
         Nothing else notices a solver that cannot see an instrument, since verification reprices
-        the lots it chose and the LP bound shares the same blind spot.
+        the lots it chose and the LP bound shares the same blind spot. Raises if it is an instrument
+        the solver was known not to see. Any other is a defect, and is returned to be reported so.
         """
+        dropped = self._dropped_by_the_solver()
         slack = 1e-6 * max(abs(solution.lower_bound), 1.0)
         for i, row in enumerate(self.usable):
             lot = row.candidate.lot_size
@@ -558,6 +581,8 @@ class _Program:
                 trial = solution.lots.copy()
                 trial[i] = quantity
                 if self.evaluate(trial) < solution.lower_bound - slack:
+                    if i in dropped:
+                        raise self._unprovable({i: dropped[i]})
                     name = row.candidate.instrument.describe()
                     return f"{quantity} of {name} beats the lower bound the solver reported"
         return None
@@ -831,7 +856,10 @@ class _Program:
         constraints, _ = self._constraints()
         self._check_solver_range(constraints)
         relaxed = self._relax(costs, constraints)
+        dropped = self._dropped_by_the_solver()
         if relaxed.status == 2:
+            if dropped:
+                raise self._unprovable(dropped)
             raise HedgeInfeasibleError(
                 "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
             )
@@ -879,6 +907,8 @@ class _Program:
                 gap = (objective - lower_bound) / max(abs(objective), 1.0)
                 return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
         if result.x is None and result.status == 2:
+            if dropped:
+                raise self._unprovable(dropped)
             raise HedgeInfeasibleError(
                 "the continuous hedge is feasible but no whole number of lots and shares is, at "
                 "full capacity: widen a band by about one unit's exposure",
@@ -1291,9 +1321,11 @@ def solve_hedge(
         )
     if usable and _uncovered_underlyings(problem, usable):
         status = ProposalStatus.PARTIAL_COVERAGE
-    if stability is not None and not stability.is_stable:
-        status = ProposalStatus.UNSTABLE
-        issues.extend(f"UNSTABLE {note}" for note in stability.notes)
+    if stability is not None:
+        if stability.notes:
+            status = ProposalStatus.UNSTABLE
+            issues.extend(f"UNSTABLE {note}" for note in stability.notes)
+        issues.extend(f"STABILITY_INCOMPLETE {note}" for note in stability.out_of_range)
 
     return HedgeProposal(
         status=status,

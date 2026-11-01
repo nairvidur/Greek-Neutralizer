@@ -60,7 +60,7 @@ A mixed-integer linear program solved in stages:
 1. **Filter.** Candidates failing the quote gates, expired, or beyond the surface's quotes are excluded, with reasons reported.
 2. **Relax.** The LP relaxation gives a true lower bound on the objective and decides feasibility.
 3. **Screen.** Reduced costs select the candidates that can matter, at most 40 beyond the LP's own picks.
-4. **Search.** HiGHS searches integer lots in a window around the LP solution that can always drop a leg, stopping at a fixed node count so that machine load does not change the result. If rounding a share leg cannot meet a band, shares are branched on too. Reaching that count with no hedge is reported as its own error, and only a solve over whole lots and shares at full capacity can report infeasibility.
+4. **Search.** HiGHS searches integer lots in a window around the LP solution that can always drop a leg, stopping at a fixed node count so that machine load does not change the result. If rounding a share leg cannot meet a band, shares are branched on too. Reaching that count with no hedge is reported as its own error, and only a solve over whole lots and shares at full capacity can report infeasibility, and only with every instrument visible to the solver.
 5. **Polish.** A deterministic local search over lot moves takes only strict improvements.
 6. **Verify.** The hedged book is repriced from scratch, and a mismatch raises instead of returning a proposal.
 

@@ -98,6 +98,7 @@ def stability_report(
 
     used = np.flatnonzero(lots)
     notes: list[str] = []
+    out_of_range: list[str] = []
     hit_time_limit = False
     # Only what the base solve accepted. The re-solves skip the quote-to-model gates because the
     # market is shocked on purpose, and a quote rejected today must not come back through that gap.
@@ -141,8 +142,10 @@ def stability_report(
             worst_regret = max(worst_regret, float("inf"))
             continue
         except SolverRangeError as exc:
-            notes.append(f"could not be re-solved under {perturbation.name}: {exc}")
-            worst_change = max(worst_change, 1.0)
+            out_of_range.append(f"could not be re-solved under {perturbation.name}: {exc}")
+            # The solver has nothing to say here, but whether the held hedge still fits is a fact.
+            if not np.isfinite(_held_value(moved_program, moved_usable, usable, lots)):
+                worst_regret = float("inf")
             continue
         except SearchLimitError as exc:
             raise SearchLimitError(
@@ -175,10 +178,33 @@ def stability_report(
         lot_change_ratio=worst_change,
         regret_ratio=worst_regret,
         drift=drift,
-        is_stable=not notes,
+        is_stable=not notes and not out_of_range,
         notes=tuple(notes),
         hit_time_limit=hit_time_limit,
+        out_of_range=tuple(out_of_range),
     )
+
+
+def _held_value(
+    program: _Program,
+    moved_usable: Sequence[_Usable],
+    usable: Sequence[_Usable],
+    lots: NDArray[np.int64],
+) -> float:
+    """Today's hedge in that market with the delta-one leg re-tuned, as a desk would, or infinite
+    when it is not feasible there or its instruments are not usable there."""
+    held = {
+        row.candidate.instrument.key: int(q) for row, q in zip(usable, lots, strict=True) if q != 0
+    }
+    index = {row.candidate.instrument.key: i for i, row in enumerate(moved_usable)}
+    mapped = np.zeros(len(moved_usable), dtype=np.int64)
+    for key, quantity in held.items():
+        position = index.get(key)
+        if position is None:
+            return float("inf")
+        mapped[position] = quantity
+    tuned = program._delta_retune(mapped)
+    return min(program.evaluate(mapped), program.evaluate(tuned) if tuned is not None else np.inf)
 
 
 def _regret(
@@ -195,18 +221,9 @@ def _regret(
     objective of doing nothing less the best objective, floored at $1. Dividing by the objective
     alone would make any tight hedge look fragile, since a good hedge has a very small one.
     """
-    held = {
-        row.candidate.instrument.key: int(q) for row, q in zip(usable, lots, strict=True) if q != 0
-    }
-    index = {row.candidate.instrument.key: i for i, row in enumerate(moved_usable)}
-    mapped = np.zeros(len(moved_usable), dtype=np.int64)
-    for key, quantity in held.items():
-        position = index.get(key)
-        if position is None:
-            return float("inf")
-        mapped[position] = quantity
-    tuned = program._delta_retune(mapped)
-    value = min(program.evaluate(mapped), program.evaluate(tuned) if tuned is not None else np.inf)
+    value = _held_value(program, moved_usable, usable, lots)
+    if not np.isfinite(value):
+        return float("inf")
     do_nothing = program.evaluate(np.zeros(len(moved_usable), dtype=np.int64))
     benefit = do_nothing - best_objective if np.isfinite(do_nothing) else abs(best_objective)
     return max(value - best_objective, 0.0) / max(benefit, 1.0)
