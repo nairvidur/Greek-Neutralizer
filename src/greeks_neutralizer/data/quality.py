@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -80,22 +79,3 @@ def assess_quote(
 
 def is_usable(flags: frozenset[QuoteFlag]) -> bool:
     return not flags & BLOCKING
-
-
-@dataclass(frozen=True, slots=True)
-class QualitySummary:
-    total: int
-    usable: int
-    by_flag: dict[str, int]
-
-
-def summarize(all_flags: Sequence[frozenset[QuoteFlag]]) -> QualitySummary:
-    counts: dict[str, int] = {}
-    for flags in all_flags:
-        for flag in flags:
-            counts[flag.value] = counts.get(flag.value, 0) + 1
-    return QualitySummary(
-        total=len(all_flags),
-        usable=sum(1 for flags in all_flags if is_usable(flags)),
-        by_flag=dict(sorted(counts.items())),
-    )

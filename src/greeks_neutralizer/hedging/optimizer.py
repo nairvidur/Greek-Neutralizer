@@ -52,6 +52,7 @@ from greeks_neutralizer.hedging.problem import (
     ResidualLine,
     RunManifest,
     VerificationReport,
+    gate_overrides,
 )
 from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.book import (
@@ -436,17 +437,17 @@ class _Program:
         matrix = sparse.csr_array((vals, (rows, cols)), shape=(len(lo), self.size))
         return [LinearConstraint(matrix, np.array(lo), np.array(hi))], names
 
-    def _integrality(self) -> NDArray[np.int64]:
+    def _integrality(self, *, all_whole: bool = False) -> NDArray[np.int64]:
         """Integer lots, except fine-grained linear hedges, which are solved then rounded.
 
-        Branching on share counts up to a million costs real solve time and buys nothing: rounding a
-        share is immaterial, and the rounded result is what gets verified and reported.
+        Branching on share counts up to a million costs real solve time and usually buys nothing:
+        the rounded result is what gets verified and reported. `all_whole` is for when it does.
         """
         kinds = np.zeros(self.size, dtype=np.int64)
         for i, row in enumerate(self.usable):
             instrument = row.candidate.instrument
             fine = isinstance(instrument, LinearInstrument) and instrument.multiplier == 1.0
-            if not fine:
+            if all_whole or not fine:
                 kinds[4 * i : 4 * i + 4] = 1
         if self.use_binary:
             kinds[self.i_used : self.i_used + self.n] = 1
@@ -459,7 +460,10 @@ class _Program:
         )
 
     def _windowed_bounds(
-        self, lp_lots: NDArray[np.float64], widen: float
+        self,
+        lp_lots: NDArray[np.float64],
+        widen: float,
+        screened: NDArray[np.bool_] | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Bounds for the integer search: near the LP solution, and always able to drop a leg.
 
@@ -477,6 +481,8 @@ class _Program:
             ub[4 * i + 1] = min(ub[4 * i + 1], np.ceil(high))
             ub[4 * i + 2] = min(ub[4 * i + 2], np.ceil(-low))
             ub[4 * i + 3] = min(ub[4 * i + 3], np.ceil(-low))
+            if screened is not None and not screened[i]:
+                ub[4 * i : 4 * i + 4] = 0.0
         return lb, ub
 
     def evaluate(self, lots: NDArray[np.int64]) -> float:
@@ -689,8 +695,11 @@ class _Program:
 
         The relaxation is fast, gives the true lower bound on the objective, and decides
         feasibility. If the window excludes every integer solution, the search widens once and then
-        drops the screen. `gap` is measured against the LP bound, so it reports what integrality
-        cost in total and cannot be fooled by an incumbent returned at the time limit.
+        drops the screen. If rounding a share leg still cannot meet a band, shares are branched on
+        too, since a share can be worth more than the band is wide. Only the last solve, all whole
+        numbers at full capacity, can prove infeasibility: every earlier one is a restriction, so
+        its failure proves nothing. `gap` is measured against the LP bound, so it reports what
+        integrality cost in total and cannot be fooled by an incumbent returned at the time limit.
         """
         config = self.problem.config
         costs = self._costs()
@@ -712,18 +721,23 @@ class _Program:
         lp_lots = self._net_lots(np.asarray(relaxed.x, dtype=np.float64))
         screened = self._screen(relaxed, lp_lots)
 
+        fine = self._integrality()
+        whole = self._integrality(all_whole=True)
+        plan = (
+            (self._windowed_bounds(lp_lots, 1.0, screened), fine),
+            (self._windowed_bounds(lp_lots, 4.0, screened), fine),
+            (self._windowed_bounds(lp_lots, 4.0), fine),
+            (self._windowed_bounds(lp_lots, 4.0), whole),
+            (self._variable_bounds(), whole),
+        )
         result: Any = None
         reached_clock = False
-        for widen, use_screen in ((1.0, True), (4.0, True), (4.0, False)):
-            win_lb, win_ub = self._windowed_bounds(lp_lots, widen)
-            if use_screen:
-                for dropped in np.flatnonzero(~screened):
-                    win_ub[4 * int(dropped) : 4 * int(dropped) + 4] = 0.0
+        for (lb, ub), integrality in plan:
             result = milp(
                 c=costs,
                 constraints=constraints,
-                bounds=Bounds(win_lb, win_ub),
-                integrality=self._integrality(),
+                bounds=Bounds(lb, ub),
+                integrality=integrality,
                 options={
                     "mip_rel_gap": config.mip_gap,
                     "node_limit": config.mip_node_limit,
@@ -732,36 +746,32 @@ class _Program:
                 },
             )
             reached_clock = reached_clock or _reached_clock(result)
-            if result.x is not None:
-                break
+            if result.x is None:
+                continue
+            lots, objective = self.polish(self._read_lots(result.x), screened)
+            if np.isfinite(objective):
+                gap = (objective - lower_bound) / max(abs(objective), 1.0)
+                return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
         if result.x is None and result.status == 2:
             raise HedgeInfeasibleError(
-                "the continuous hedge is feasible but no integer lots are: widen a band by about "
-                "one contract's exposure",
+                "the continuous hedge is feasible but no whole number of lots and shares is, at "
+                "full capacity: widen a band by about one unit's exposure",
                 self.diagnose_infeasibility(),
             )
-        if result.x is None:
-            raise SearchLimitError(
-                f"the integer search stopped with no hedge, inside mip_node_limit="
-                f"{config.mip_node_limit} and time_limit_seconds={config.time_limit_seconds:g}. "
-                "That does not show that no hedge exists: raise mip_node_limit or "
-                f"time_limit_seconds, or reduce the universe. Solver: {result.message}"
-            )
-        x = np.asarray(result.x, dtype=np.float64)
+        raise SearchLimitError(
+            f"the integer search stopped with no hedge, inside mip_node_limit="
+            f"{config.mip_node_limit} and time_limit_seconds={config.time_limit_seconds:g}. "
+            "That does not show that no hedge exists: raise mip_node_limit or "
+            f"time_limit_seconds, or reduce the universe. Solver: {result.message}"
+        )
+
+    def _read_lots(self, x: NDArray[np.float64]) -> NDArray[np.int64]:
         lots = np.zeros(self.n, dtype=np.int64)
         for i, row in enumerate(self.usable):
-            lot = row.candidate.lot_size
             buys = round(x[4 * i]) + round(x[4 * i + 1])
             sells = round(x[4 * i + 2]) + round(x[4 * i + 3])
-            lots[i] = (buys - sells) * lot
-        lots, objective = self.polish(lots, screened)
-        if not np.isfinite(objective):
-            raise HedgeInfeasibleError(
-                "the continuous hedge is feasible, but no whole number of lots or shares meets the "
-                "limits: widen a band by about one unit's exposure"
-            )
-        gap = (objective - lower_bound) / max(abs(objective), 1.0)
-        return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
+            lots[i] = (buys - sells) * row.candidate.lot_size
+        return lots
 
     def diagnose_infeasibility(self) -> tuple[str, ...]:
         """Which hard constraints cannot be met, found by solving with explicit slack on each.
@@ -1041,7 +1051,11 @@ def solve_hedge(
     book = value_book(problem.book, snapshot)
     issues = list(book.issues)
     config = problem.config
+    overrides = gate_overrides(config)
     issues.extend(_coverage_issues(problem, snapshot, usable, excluded))
+    if overrides:
+        shown = ", ".join(f"{name}={value}" for name, value in overrides.items())
+        issues.append(f"GATE_SETTINGS gates changed from their defaults: {shown}")
 
     book_scenario = book_scenario_pnl(problem.book, snapshot, problem.scenarios)
     unit_scenario = (
@@ -1158,6 +1172,7 @@ def solve_hedge(
             scipy_version=scipy_version,
             numpy_version=np.__version__,
             run_stability=run_stability,
+            gate_overrides=overrides,
         ),
     )
 

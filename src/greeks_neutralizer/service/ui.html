@@ -206,13 +206,14 @@ function table(headers, rows, leftColumns = []) {
     <tbody>${rows.map((r) => `<tr>${r.join("")}</tr>`).join("")}</tbody></table>`;
 }
 
-function renderProposal(p) {
+function renderProposal(p, reviewing = "") {
   const verified = p.verification.passed;
   const stable = p.stability ? p.stability.is_stable : null;
   const worstBefore = Math.min(...Object.values(p.scenario_pnl_before));
   const worstAfter = Math.min(...Object.values(p.scenario_pnl_after));
   $("summary").className = "";
   $("summary").innerHTML = `
+    ${reviewing ? `<div class="notice">${escapeHtml(reviewing)}</div>` : ""}
     <div class="row" style="margin:0 0 10px">
       ${statusBadge(p.status)}
       <span class="badge ${verified ? "ok" : "bad"}">${verified ? "verified by repricing" : "verification failed"}</span>
@@ -226,7 +227,10 @@ function renderProposal(p) {
       <div class="kpi"><span>Worst stress after</span><strong>${Number.isFinite(worstAfter) ? signed(worstAfter) : "n/a"}</strong></div>
       <div class="kpi"><span>Excluded candidates</span><strong>${p.excluded.length}</strong></div>
     </div>
-    ${p.issues.map((i) => `<div class="notice warn">${escapeHtml(i)}</div>`).join("")}`;
+    ${p.issues.map((i) => `<div class="notice warn">${escapeHtml(i)}</div>`).join("")}
+    ${p.excluded.length ? `<div class="scroll">${table(["Excluded", "Reason"], p.excluded.map((e) => [
+      `<td style="text-align:left">${escapeHtml(e.instrument)}</td>`,
+      `<td class="wrap" style="text-align:left">${escapeHtml(e.reason)}</td>`]), [0, 1])}</div>` : ""}`;
 
   $("legs").innerHTML = p.legs.length ? table(
     ["Side", "Qty", "Instrument", "Limit", "Premium", "Cost", "Why"],
@@ -276,22 +280,26 @@ function renderFrontier(data) {
          `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`]), [1]);
 }
 
+const opened = new Set();
+
 async function refreshApprovals() {
   const data = await api("/v1/proposals");
   if (!data.count) {
     $("approvals").innerHTML = `<div class="empty">0 proposals submitted.</div>`;
     return;
   }
-  $("approvals").innerHTML = table(["Proposal", "State", "By", "Legs", "Cost", "Actions"],
+  $("approvals").innerHTML = table(["Proposal", "State", "Status", "Issues", "By", "Legs", "Cost", "Actions"],
     data.proposals.map((r) => {
       const actions = r.state === "proposed"
-        ? `<button data-act="approve" data-id="${r.id}">Approve</button>
+        ? `<button data-act="open" data-id="${r.id}">Open</button>
+           <button data-act="approve" data-id="${r.id}"${opened.has(r.id) ? "" : ' disabled title="Open this proposal first"'}>Approve</button>
            <button data-act="reject" data-id="${r.id}">Reject</button>`
         : (r.state === "approved" || r.state === "exported")
           ? `<button data-act="tickets" data-id="${r.id}">Download tickets</button>` : "";
       const cls = r.state === "rejected" ? "bad" : r.state === "proposed" ? "warn" : "ok";
       return [`<td class="mono">${escapeHtml(r.id.slice(0, 8))}</td>`,
         `<td><span class="badge ${cls}">${escapeHtml(r.state)}</span></td>`,
+        `<td>${statusBadge(r.proposal.status)}</td>`, `<td>${r.proposal.issues.length}</td>`,
         `<td>${escapeHtml(r.created_by)}</td>`, `<td>${r.proposal.legs.length}</td>`,
         `<td>${fmt(r.proposal.transaction_cost, 2)}</td>`, `<td><div class="row" style="margin:0;justify-content:flex-end">${actions}</div></td>`];
     }));
@@ -300,7 +308,7 @@ async function refreshApprovals() {
 async function refreshAudit() {
   const data = await api("/v1/audit?limit=25");
   $("chain").innerHTML = data.chain_ok
-    ? `<span class="badge ok">chain intact, ${data.total} records</span>`
+    ? `<span class="badge ok">chain intact, ${data.total} record${data.total === 1 ? "" : "s"}</span>`
     : `<span class="badge bad">CHAIN BROKEN at line ${data.first_bad_line}</span>`;
   $("audit").innerHTML = data.records.length ? table(["Time", "Event", "Actor", "Proposal", "Hash"],
     data.records.map((r) => [
@@ -318,6 +326,7 @@ $("login").addEventListener("submit", (event) => {
 
 async function connect() {
   token = $("token").value.trim();
+  opened.clear();
   const me = await api("/v1/whoami");
   $("who").textContent = `Signed in as ${me.actor}`;
   ["load", "propose", "frontier", "submit"].forEach((id) => { $(id).disabled = false; });
@@ -353,7 +362,14 @@ $("approvals").addEventListener("click", (event) => {
   if (!button) return;
   const {act, id} = button.dataset;
   guarded(button, async () => {
-    if (act === "approve") {
+    if (act === "open") {
+      const record = await api(`/v1/proposals/${id}`);
+      renderProposal(record.proposal, `Reviewing proposal ${id.slice(0, 8)} by ${record.created_by}`);
+      $("grid").innerHTML = `<div class="empty">The grid is for a request proposed here, not this submitted proposal.</div>`;
+      $("frontierOut").innerHTML = `<div class="empty">Cost against risk is for a request proposed here, not this submitted proposal.</div>`;
+      opened.add(id);
+      $("summary").scrollIntoView();
+    } else if (act === "approve") {
       await api(`/v1/proposals/${id}/approve`, {method: "POST", body: "{}"});
     } else if (act === "reject") {
       const reason = $("reason").value;

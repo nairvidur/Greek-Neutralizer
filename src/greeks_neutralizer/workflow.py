@@ -328,6 +328,7 @@ class ProposalStore:
                     "scipy_version": proposal.manifest.scipy_version,
                     "numpy_version": proposal.manifest.numpy_version,
                     "run_stability": proposal.manifest.run_stability,
+                    "gate_overrides": dict(proposal.manifest.gate_overrides),
                 },
                 now,
             )

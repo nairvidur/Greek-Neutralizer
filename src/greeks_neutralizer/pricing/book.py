@@ -77,7 +77,6 @@ class OptionValuation:
     expired: NDArray[np.bool_]
     american_tree: NDArray[np.bool_]
     exercise_premium: FloatArray
-    smile_slope: FloatArray  # d sigma / d k at the contract's strike
     extrapolated: NDArray[np.bool_]  # vol read beyond the surface's quoted strikes
 
 
@@ -133,11 +132,8 @@ def _group_by_underlying(contracts: Sequence[OptionContract]) -> dict[str, list[
     return groups
 
 
-def _smile(
-    market: UnderlyingMarket, k: FloatArray, tau: FloatArray
-) -> tuple[FloatArray, FloatArray]:
-    """Vol and d(vol)/dk from the surface, rejecting unusable values. Slope by central difference
-    on log-moneyness, which is the only thing the protocol guarantees."""
+def _smile(market: UnderlyingMarket, k: FloatArray, tau: FloatArray) -> FloatArray:
+    """Vol from the surface, rejecting unusable values."""
     vol = np.asarray(market.surface.vol(k, tau), dtype=np.float64)
     if not np.all(np.isfinite(vol)) or np.any(vol < 0.0):
         raise MarketDataError(f"{market.symbol}: vol surface returned NaN or a negative vol")
@@ -146,10 +142,7 @@ def _smile(
             f"{market.symbol}: vol of {float(np.max(vol)):.2f} is implausible. Vols are decimals, "
             "so 25% is 0.25"
         )
-    h = 1e-4
-    up = market.surface.vol(k + h, tau)
-    dn = market.surface.vol(k - h, tau)
-    return vol, np.asarray((up - dn) / (2.0 * h), dtype=np.float64)
+    return vol
 
 
 @dataclass(slots=True)
@@ -163,7 +156,6 @@ class _Buffers:
     expired: NDArray[np.bool_]
     tree: NDArray[np.bool_]
     premium: FloatArray
-    slope: FloatArray
     extrapolated: NDArray[np.bool_]
 
     @staticmethod
@@ -179,7 +171,6 @@ class _Buffers:
             expired=np.zeros(n, dtype=bool),
             tree=np.zeros(n, dtype=bool),
             premium=col(),
-            slope=col(),
             extrapolated=np.zeros(n, dtype=bool),
         )
 
@@ -200,7 +191,6 @@ def value_options(
         expired=out.expired,
         american_tree=out.tree,
         exercise_premium=out.premium,
-        smile_slope=out.slope,
         extrapolated=out.extrapolated,
     )
 
@@ -227,10 +217,9 @@ def _value_group(
 
     k = np.log(strikes / forwards)
     vol = np.zeros_like(T)
-    slope = np.zeros_like(T)
     extrapolated = np.zeros_like(live)
     if np.any(live):
-        vol[live], slope[live] = _smile(market, k[live], tau[live])
+        vol[live] = _smile(market, k[live], tau[live])
         check = getattr(market.surface, "extrapolating", None)
         if check is not None:
             extrapolated[live] = check(k[live], tau[live])
@@ -298,7 +287,6 @@ def _value_group(
     out.expired[idx] = ~live
     out.tree[idx] = needs_tree
     out.premium[idx] = premium
-    out.slope[idx] = slope
     out.extrapolated[idx] = extrapolated
 
 

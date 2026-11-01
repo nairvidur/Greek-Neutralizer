@@ -10,6 +10,9 @@ Configuration, from the environment only:
   GN_AUDIT_LOG   audit log path, default ./gn_audit.jsonl
   GN_MAX_BODY    maximum request size in bytes, default 5000000
   GN_MAX_MARKET_AGE_SECONDS  oldest market a proposal can be submitted on, default 900
+  GN_GATE_MAX_QUOTE_AGE_SECONDS, GN_GATE_INSTABILITY_THRESHOLD, GN_GATE_REGRET_THRESHOLD,
+  GN_GATE_MAX_MODEL_QUOTE_VOL_GAP, GN_GATE_MAX_LOTS_PER_LEG, GN_GATE_ALLOW_EXTRAPOLATED_VOL,
+  GN_GATE_REQUIRE_QUOTE_SIZE  the loosest a request may set each gate, default the library default
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ from greeks_neutralizer.errors import (
 from greeks_neutralizer.examples import example_request
 from greeks_neutralizer.hedging.diagnostics import hedge_frontier
 from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
+from greeks_neutralizer.hedging.problem import HedgeConfig, HedgeProblem, loosened_gates
+from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.book import value_book
 from greeks_neutralizer.risk.measures import expiry_risks
 from greeks_neutralizer.risk.scenarios import book_scenario_pnl, spot_vol_grid
@@ -72,6 +77,40 @@ def _parse_tokens(raw: str) -> dict[str, str]:
             raise RuntimeError("GN_TOKENS must be comma-separated token=actor pairs")
         tokens[token] = actor
     return tokens
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if raw not in ("true", "false"):
+        raise RuntimeError(f"{name} must be true or false, got {raw!r}")
+    return raw == "true"
+
+
+def _gate_limits_from_env() -> HedgeConfig:
+    """The loosest gates this service accepts. Unset means the library default: no loosening."""
+    base = HedgeConfig()
+    env = os.environ
+    return HedgeConfig(
+        max_quote_age=timedelta(
+            seconds=float(
+                env.get("GN_GATE_MAX_QUOTE_AGE_SECONDS", base.max_quote_age.total_seconds())
+            )
+        ),
+        instability_threshold=float(
+            env.get("GN_GATE_INSTABILITY_THRESHOLD", base.instability_threshold)
+        ),
+        regret_threshold=float(env.get("GN_GATE_REGRET_THRESHOLD", base.regret_threshold)),
+        max_model_quote_vol_gap=float(
+            env.get("GN_GATE_MAX_MODEL_QUOTE_VOL_GAP", base.max_model_quote_vol_gap)
+        ),
+        max_lots_per_leg=int(env.get("GN_GATE_MAX_LOTS_PER_LEG", base.max_lots_per_leg)),
+        allow_extrapolated_vol=_env_flag(
+            "GN_GATE_ALLOW_EXTRAPOLATED_VOL", base.allow_extrapolated_vol
+        ),
+        require_quote_size=_env_flag("GN_GATE_REQUIRE_QUOTE_SIZE", base.require_quote_size),
+    )
 
 
 def _clean(value: Any) -> Any:
@@ -113,6 +152,7 @@ def create_app(
     audit_path: Path | None = None,
     max_body: int | None = None,
     clock: Callable[[], datetime] | None = None,
+    gate_limits: HedgeConfig | None = None,
 ) -> FastAPI:
     """Build the app. With no tokens configured it refuses to start, rather than running open."""
     token_map = tokens if tokens is not None else _parse_tokens(os.environ.get("GN_TOKENS", ""))
@@ -122,6 +162,7 @@ def create_app(
     body_limit = max_body or int(os.environ.get("GN_MAX_BODY", "5000000"))
     max_age = float(os.environ.get("GN_MAX_MARKET_AGE_SECONDS", "900"))
     now = clock or (lambda: datetime.now(UTC))
+    limits = gate_limits or _gate_limits_from_env()
     store = ProposalStore(
         AuditLog(audit_file), WorkflowPolicy(max_market_age=timedelta(seconds=max_age)), now
     )
@@ -134,6 +175,15 @@ def create_app(
     app.state.store = store
     app.state.started = time.time()
     app.state.counts = {"requests": 0, "errors": 0}
+
+    def parse_within_limits(payload: dict[str, Any]) -> tuple[HedgeProblem, MarketSnapshot, bool]:
+        problem, snapshot, stability = parse_hedge_request(payload)
+        loosened = loosened_gates(problem.config, limits)
+        if loosened:
+            raise ValidationError(
+                f"this service does not allow {', '.join(loosened)} looser than its limit"
+            )
+        return problem, snapshot, stability
 
     def actor(authorization: str | None = Header(default=None)) -> str:
         if not authorization or not authorization.startswith("Bearer "):
@@ -150,8 +200,9 @@ def create_app(
     ) -> Response:
         request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
         length = request.headers.get("content-length")
-        # A body with no declared length would bypass the limit, so it is refused outright.
-        if request.method == "POST" and length is None and request.headers.get("transfer-encoding"):
+        # The server frames a chunked body by its chunks whatever Content-Length says, so a declared
+        # length cannot bound it. Any request with Transfer-Encoding is refused outright.
+        if request.headers.get("transfer-encoding"):
             return JSONResponse({"error": "a Content-Length is required"}, status_code=411)
         if length and int(length) > body_limit:
             return JSONResponse(
@@ -299,12 +350,12 @@ def create_app(
 
     @app.post("/v1/hedge")
     def hedge(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
-        problem, snapshot, stability = parse_hedge_request(payload)
+        problem, snapshot, stability = parse_within_limits(payload)
         return _safe(proposal_to_json(solve_hedge(problem, snapshot, run_stability=stability)))
 
     @app.post("/v1/frontier")
     def frontier(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
-        problem, snapshot, _ = parse_hedge_request(payload)
+        problem, snapshot, _ = parse_within_limits(payload)
         points = hedge_frontier(problem, snapshot)
         return _safe(
             {
@@ -327,7 +378,7 @@ def create_app(
 
     @app.post("/v1/proposals", status_code=201)
     def submit(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
-        problem, snapshot, stability = parse_hedge_request(payload)
+        problem, snapshot, stability = parse_within_limits(payload)
         proposal = solve_hedge(problem, snapshot, run_stability=stability)
         return _safe(_record_json(store.submit(proposal, user)))
 

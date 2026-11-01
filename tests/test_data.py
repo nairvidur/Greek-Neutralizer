@@ -20,7 +20,6 @@ from greeks_neutralizer.data.quality import (
     QuoteFlag,
     assess_quote,
     is_usable,
-    summarize,
 )
 from greeks_neutralizer.data.symbology import OsiSymbol, parse_osi
 from greeks_neutralizer.domain import (
@@ -99,11 +98,6 @@ def test_source_without_sizes_needs_explicit_policy():
     q = quote(bs=0, a_s=0)
     assert not is_usable(assess_quote(q, NOW))
     assert is_usable(assess_quote(q, NOW, policy=QualityPolicy(require_size=False)))
-
-
-def test_summary_counts():
-    s = summarize([assess_quote(quote(1.2, 1.1), NOW), assess_quote(quote(), NOW)])
-    assert (s.total, s.usable, s.by_flag) == (2, 1, {"crossed": 1})
 
 
 def _chain(F=100.0, D=0.99, T=0.25, spread=0.02, vol_fn=None, style=ExerciseStyle.EUROPEAN):

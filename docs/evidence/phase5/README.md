@@ -18,9 +18,10 @@ Gate: "end-to-end trader workflow in a browser, load test, restore drill, and th
 Driven with Chrome through `chrome-devtools-axi`, against the running service:
 
 1. Alice connects, loads the sample, and proposes a hedge: `ui_proposal_desktop.png`.
-2. Alice submits it and tries to approve her own proposal, and four-eyes refuses it: `ui_four_eyes_refused.png`.
-3. Bob connects and approves it: `ui_approved.png`.
-4. At 390 by 844, the page has no horizontal overflow: `ui_phone.png`.
+2. Alice submits it, opens it, and tries to approve her own proposal, and four-eyes refuses it: `ui_four_eyes_refused.png`.
+3. Bob connects, where Approve is disabled until he opens the proposal: `ui_review_before_approval.png`.
+4. Bob opens it, which renders its status, issues, legs, residuals, and exclusions, and approves it: `ui_approved.png`.
+5. At 390 by 844, the page has no horizontal overflow: `ui_phone.png`.
 
 The audit chain stayed intact, and the only console error was the expected 409 from step 2.
 The sample uses illustrative values, not market data.

@@ -27,7 +27,9 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | HTTP 500 `verification_failed` | A solution failed independent repricing | **Do not trade.** Save the request and report it as a bug: this should never happen |
 | Proposal status `unstable` | A small input change moves the trade and costs benefit | Review the notes, and widen the candidates or tighten the universe |
 | Proposal status `within_gap` | Integer lots cost more than the configured gap | Read the `INTEGRALITY_GAP` issue. Usually fine at the stated size, and a weak bound with `max_legs` |
-| 422 `infeasible` | The solver proved that no hedge meets the bands | Read `binding`, then widen those bands or add candidates |
+| 422 `infeasible` | The solver proved, over whole lots and shares at full capacity, that no hedge meets the bands | Read `binding`, then widen those bands or add candidates |
+| 422 `validation`, "looser than its limit" | The request loosens a gate past this service's limit | Use the default, or have whoever owns the deployment raise that `GN_GATE_*` limit. Do not change it to get a trade through |
+| `GATE_SETTINGS` in issues | A fail-closed gate is not at its default | Approvers: decide whether that setting is justified before approving |
 | 422 `search_limit` | The search stopped with no hedge, in the base solve or a stability re-solve. **This does not mean no hedge exists** | Raise `mip_node_limit` or `time_limit_seconds`, or reduce the universe. Do not widen bands because of it |
 | 422 `market_data` | Data failed closed | Fix the feed. Do not bypass the gate |
 | 409 with `re-propose` | The proposal or its market is too old, or the market is dated in the future | Propose again on current data, after checking the feed's clock if it is in the future. `GN_MAX_MARKET_AGE_SECONDS` sets the market limit |

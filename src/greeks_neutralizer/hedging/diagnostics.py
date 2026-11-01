@@ -300,6 +300,7 @@ def _delta_only_problem(problem: HedgeProblem) -> HedgeProblem | None:
         risk_aversion=1.0,
         max_quote_age=problem.config.max_quote_age,
         require_quote_size=problem.config.require_quote_size,
+        max_lots_per_leg=problem.config.max_lots_per_leg,
         mip_node_limit=problem.config.mip_node_limit,
         time_limit_seconds=problem.config.time_limit_seconds,
     )

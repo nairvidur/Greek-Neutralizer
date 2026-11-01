@@ -32,7 +32,9 @@ Keep `/healthz` and `/metrics` off the public path, because they are unauthentic
 | Market age | A proposal on a market older than `GN_MAX_MARKET_AGE_SECONDS`, or dated more than a second ahead of the service clock, cannot be submitted, approved, or exported |
 | Stability required | A proposal with legs must have run its stability check to be submitted |
 | Input validation | Unknown fields rejected, and types and values checked at construction. Instrument symbols are limited to a strict character set, so they cannot inject ticket fields or spreadsheet formulas |
-| Request size | Limited by `GN_MAX_BODY` |
+| Request size | Limited by `GN_MAX_BODY`. Any request with `Transfer-Encoding` is refused, because a chunked body is not bounded by a declared length |
+| Gate settings | A request cannot loosen a fail-closed gate past this service's limit, which is a 422 naming the setting. Limits come from the `GN_GATE_*` environment settings and default to the library defaults, so a default deployment allows no loosening. Tightening stays allowed. Any non-default gate adds a `GATE_SETTINGS` issue and goes into the audit record |
+| Approver sees the proposal | In the UI, approval rows show status and issue count, and Approve stays disabled until that proposal has been opened. This is a UI control: the API does not enforce it |
 | No order routing | The package has no way to send an order |
 | Dependency audit | `pip-audit` in CI |
 | Container | Built from the wheel, runs non-root, with no dev dependencies |

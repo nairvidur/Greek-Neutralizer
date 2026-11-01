@@ -193,6 +193,43 @@ class HedgeConfig:
         return QualityPolicy(max_age=self.max_quote_age, require_size=self.require_quote_size)
 
 
+# Each fail-closed gate: its name in a request, its HedgeConfig field, and if higher is looser.
+_GATES: tuple[tuple[str, str, bool], ...] = (
+    ("max_quote_age_seconds", "max_quote_age", True),
+    ("instability_threshold", "instability_threshold", True),
+    ("regret_threshold", "regret_threshold", True),
+    ("max_model_quote_vol_gap", "max_model_quote_vol_gap", True),
+    ("max_lots_per_leg", "max_lots_per_leg", True),
+    ("allow_extrapolated_vol", "allow_extrapolated_vol", True),
+    ("require_quote_size", "require_quote_size", False),
+)
+
+
+def _gate_value(config: HedgeConfig, attribute: str) -> float | bool:
+    value = getattr(config, attribute)
+    return value.total_seconds() if isinstance(value, timedelta) else value
+
+
+def gate_overrides(config: HedgeConfig) -> dict[str, float | bool]:
+    """Every gate not at its library default, whichever way it moved, for an approver to see."""
+    default = HedgeConfig()
+    return {
+        name: _gate_value(config, attribute)
+        for name, attribute, _ in _GATES
+        if _gate_value(config, attribute) != _gate_value(default, attribute)
+    }
+
+
+def loosened_gates(config: HedgeConfig, limits: HedgeConfig) -> tuple[str, ...]:
+    """The gates `config` sets looser than `limits`, by their names in a request."""
+    return tuple(
+        name
+        for name, attribute, higher_is_looser in _GATES
+        if (_gate_value(config, attribute) > _gate_value(limits, attribute)) is higher_is_looser
+        and _gate_value(config, attribute) != _gate_value(limits, attribute)
+    )
+
+
 def _reject_duplicates(kind: str, names: Sequence[str]) -> None:
     repeated = sorted(name for name, seen in Counter(names).items() if seen > 1)
     if repeated:
@@ -305,6 +342,7 @@ class RunManifest:
     scipy_version: str
     numpy_version: str
     run_stability: bool
+    gate_overrides: Mapping[str, float | bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,4 +391,6 @@ __all__ = [
     "RunManifest",
     "StabilityReport",
     "VerificationReport",
+    "gate_overrides",
+    "loosened_gates",
 ]
