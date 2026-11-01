@@ -9,7 +9,7 @@
   "n_candidates": 2144,
   "n_excluded": 32,
   "status": "within_gap",
-  "seconds_to_solve_with_stability": 35.07550262500081,
+  "seconds_to_solve_with_stability": 36.062157915999705,
   "legs": [
     "Sell 15 SPX (spot): delta_dollars -113,851; cost 7.50",
     "Buy 6 SPX 2026-11-20 7550P: delta_dollars -1,915,341, gamma_1pct +449,650, vega_1pt +4,267; cost 244.20",
@@ -73,7 +73,8 @@
   },
   "stability": {
     "condition_number": 9.686075623538136,
-    "lot_change_ratio": 0.0,
+    "lot_change_ratio": 0.7741935483870968,
+    "regret_ratio": 0.0447332450074028,
     "is_stable": true,
     "notes": []
   },
@@ -191,6 +192,6 @@
   "manifest": {
     "code_version": "2.0.0a1",
     "market_fingerprint": "3e9641e6f5863afb7e8038895b5926320cc6f812a2b91eda69940099f4683a49",
-    "problem_fingerprint": "430791db681c8563b78e8af9e0b0d9032e33216a13518a6690b60381330960c3"
+    "problem_fingerprint": "444c1ab54029631b8c4356aed3cee9601008cbf73f9e8d016317530bd63ddb35"
   }
 }

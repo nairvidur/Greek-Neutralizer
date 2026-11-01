@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from greeks_neutralizer.domain import Position
+from greeks_neutralizer.domain import LinearInstrument, Position
 from greeks_neutralizer.errors import HedgeInfeasibleError, ValidationError
 from greeks_neutralizer.hedging.problem import (
     GreekName,
@@ -28,7 +28,12 @@ from greeks_neutralizer.hedging.problem import (
 from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.pricing.book import Exposure, value_book
-from greeks_neutralizer.risk.scenarios import Scenario, shock_snapshot
+from greeks_neutralizer.risk.scenarios import (
+    Scenario,
+    book_scenario_pnl,
+    scenario_pnl_matrix,
+    shock_snapshot,
+)
 
 if TYPE_CHECKING:
     from greeks_neutralizer.hedging.optimizer import _Program, _Usable
@@ -42,7 +47,7 @@ PERTURBATIONS: tuple[Scenario, ...] = (
     Scenario("skew flatter", skew_shock=0.02),
 )
 
-_CONDITION_LIMIT = 1e6
+_MIN_LOTS_FOR_RATIO = 10.0
 
 
 def _penalized_residual(
@@ -55,6 +60,22 @@ def _penalized_residual(
     return total
 
 
+def _contract_lots(usable: Sequence[_Usable], lots: NDArray[np.int64]) -> dict[str, int]:
+    """Lots by instrument key, leaving out fine-grained linear hedges.
+
+    Shares and contracts are different units, and a share hedge should move with spot: that is its
+    job, not instability. Keys rather than positions, because a perturbed market can change which
+    candidates are usable.
+    """
+    out: dict[str, int] = {}
+    for row, quantity in zip(usable, lots, strict=True):
+        instrument = row.candidate.instrument
+        fine = isinstance(instrument, LinearInstrument) and instrument.multiplier == 1.0
+        if quantity != 0 and not fine:
+            out[instrument.key] = int(quantity)
+    return out
+
+
 def stability_report(
     problem: HedgeProblem,
     snapshot: MarketSnapshot,
@@ -62,16 +83,18 @@ def stability_report(
     usable: list[_Usable],
     program: _Program,
 ) -> StabilityReport:
+    """Re-solve under small market perturbations and measure how far the option trade moves.
+
+    A hedge is called unstable only if the trade moves and that move matters. Near-substitutes can
+    swap freely at no cost: two calls on one expiry have exactly proportional gamma and vega, which
+    also makes the Greek matrix singular for a sensible hedge. So `condition_number` is reported
+    for inspection only, and `regret_ratio` measures what it would cost to be wrong.
+    """
     from greeks_neutralizer.hedging.optimizer import _filter_candidates, _Program
 
     used = np.flatnonzero(lots)
     notes: list[str] = []
     condition = _condition_number(problem, usable, used, program)
-    if condition > _CONDITION_LIMIT:
-        notes.append(
-            f"hedge legs are nearly dependent (condition number {condition:.2e}): "
-            "they may be large offsetting positions in similar instruments"
-        )
 
     hedge_positions = [
         Position(usable[int(i)].candidate.instrument, int(lots[int(i)])) for i in used
@@ -81,7 +104,10 @@ def stability_report(
 
     drift: dict[str, float] = {}
     worst_change = 0.0
-    base_lots = max(float(np.abs(lots).sum()), 1.0)
+    worst_regret = 0.0
+    base = _contract_lots(usable, lots)
+    # A floor, so that moving one or two lots of a very small trade is not reported as instability.
+    denominator = max(float(sum(abs(q) for q in base.values())), _MIN_LOTS_FOR_RATIO)
     for perturbation in PERTURBATIONS:
         shocked = shock_snapshot(snapshot, perturbation)
         held = _penalized_residual(problem.targets, value_book(hedged, shocked).by_underlying)
@@ -89,33 +115,81 @@ def stability_report(
         try:
             moved_usable, _ = _filter_candidates(problem, shocked)
             book = value_book(problem.book, shocked)
-            moved = _Program(
-                problem,
-                moved_usable,
-                dict(book.by_underlying),
-                program.book_scenario,
-                program.unit_scenario,
-            ).solve()
+            moved_scenario = book_scenario_pnl(problem.book, shocked, problem.scenarios)
+            moved_units = (
+                scenario_pnl_matrix(
+                    [u.candidate.instrument for u in moved_usable], shocked, problem.scenarios
+                )
+                if moved_usable and problem.scenarios
+                else np.zeros((len(problem.scenarios), len(moved_usable)), dtype=np.float64)
+            )
+            moved_program = _Program(
+                problem, moved_usable, dict(book.by_underlying), moved_scenario, moved_units
+            )
+            moved = moved_program.solve()
         except HedgeInfeasibleError:
             notes.append(f"infeasible under {perturbation.name}: the bands are fragile")
             worst_change = max(worst_change, 1.0)
+            worst_regret = max(worst_regret, float("inf"))
             continue
-        if moved.lots.shape == lots.shape:
-            change = float(np.abs(moved.lots - lots).sum()) / base_lots
-            worst_change = max(worst_change, change)
+        other = _contract_lots(moved_usable, moved.lots)
+        change = sum(abs(base.get(key, 0) - other.get(key, 0)) for key in {*base, *other})
+        worst_change = max(worst_change, change / denominator)
+        worst_regret = max(
+            worst_regret,
+            _regret(moved_program, moved_usable, moved.objective, usable, lots),
+        )
     threshold = problem.config.instability_threshold
-    if worst_change > threshold:
+    regret_limit = problem.config.regret_threshold
+    if worst_change > threshold and worst_regret > regret_limit:
         notes.append(
-            f"a small input change moves the trade by {worst_change:.0%} of its lots, "
-            f"over the {threshold:.0%} limit"
+            f"a small input change moves the option trade by {worst_change:.0%} of its contracts, "
+            f"and holding this hedge would give up {_percent(worst_regret)} of its benefit against "
+            f"the hedge that market calls for, over the {regret_limit:.0%} limit"
         )
     return StabilityReport(
         condition_number=condition,
         lot_change_ratio=worst_change,
+        regret_ratio=worst_regret,
         drift=drift,
         is_stable=not notes,
         notes=tuple(notes),
     )
+
+
+def _percent(value: float) -> str:
+    return "an unbounded amount" if not np.isfinite(value) else f"{value:.0%}"
+
+
+def _regret(
+    program: _Program,
+    moved_usable: Sequence[_Usable],
+    best_objective: float,
+    usable: Sequence[_Usable],
+    lots: NDArray[np.int64],
+) -> float:
+    """How much worse today's hedge is than re-solving, if the market were really the moved one.
+
+    Evaluated with the delta-one leg re-tuned, since a desk would do that anyway, and infinite when
+    the held hedge is not feasible there. As a share of the benefit of hedging in that market: the
+    objective of doing nothing less the best objective, floored at $1. Dividing by the objective
+    alone would make any tight hedge look fragile, since a good hedge has a very small one.
+    """
+    held = {
+        row.candidate.instrument.key: int(q) for row, q in zip(usable, lots, strict=True) if q != 0
+    }
+    index = {row.candidate.instrument.key: i for i, row in enumerate(moved_usable)}
+    mapped = np.zeros(len(moved_usable), dtype=np.int64)
+    for key, quantity in held.items():
+        position = index.get(key)
+        if position is None:
+            return float("inf")
+        mapped[position] = quantity
+    tuned = program._delta_retune(mapped)
+    value = min(program.evaluate(mapped), program.evaluate(tuned) if tuned is not None else np.inf)
+    do_nothing = program.evaluate(np.zeros(len(moved_usable), dtype=np.int64))
+    benefit = do_nothing - best_objective if np.isfinite(do_nothing) else abs(best_objective)
+    return max(value - best_objective, 0.0) / max(benefit, 1.0)
 
 
 def _condition_number(
@@ -178,8 +252,6 @@ def hedge_frontier(
     book = value_book(problem.book, snapshot)
     before_scenarios = {}
     if problem.scenarios:
-        from greeks_neutralizer.risk.scenarios import book_scenario_pnl
-
         pnl = book_scenario_pnl(problem.book, snapshot, problem.scenarios)
         before_scenarios = {s.name: float(v) for s, v in zip(problem.scenarios, pnl, strict=True)}
     points = [
@@ -222,8 +294,6 @@ def hedge_frontier(
 
 def _delta_only_problem(problem: HedgeProblem) -> HedgeProblem | None:
     """Same book and scenarios, but only linear hedges, with a very strong penalty on delta."""
-    from greeks_neutralizer.domain import LinearInstrument
-
     linear = tuple(c for c in problem.candidates if isinstance(c.instrument, LinearInstrument))
     if not linear:
         return None

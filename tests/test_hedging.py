@@ -401,7 +401,7 @@ def test_manifest_changes_with_inputs_and_replay_is_exact():
     assert a.manifest.problem_fingerprint != c.manifest.problem_fingerprint
 
 
-def test_stability_detects_nearly_identical_hedges():
+def test_stability_condition_number_is_visible_for_near_identical_hedges():
     twins = (
         option_candidate("call", 100, 60),
         option_candidate("call", 100.01, 60),
@@ -411,6 +411,72 @@ def test_stability_detects_nearly_identical_hedges():
     assert p.stability is not None
     if len(p.legs) > 1:
         assert p.stability.condition_number > 100.0
+
+
+def test_singular_gamma_vega_from_one_expiry_is_not_called_unstable():
+    # Same-expiry options have exactly proportional gamma and vega: a Black-Scholes identity. That
+    # makes the Greek matrix singular for a sensible small hedge, which must not read as unstable.
+    same_expiry = (
+        stock_candidate(),
+        option_candidate("call", 105, 60),
+        option_candidate("call", 110, 60),
+    )
+    p = solve(candidates=same_expiry, config=HedgeConfig(risk_aversion=1.0), run_stability=True)
+    assert p.stability is not None
+    assert p.stability.condition_number > 1e6
+    # The trade may swap between the substitutes, which costs little: regret is what decides.
+    assert p.stability.regret_ratio < 0.1
+    assert p.stability.is_stable
+
+
+def test_regret_is_infinite_when_the_held_hedge_is_unavailable():
+    from greeks_neutralizer.hedging.diagnostics import _regret
+    from greeks_neutralizer.hedging.optimizer import _filter_candidates, _Program
+
+    problem = HedgeProblem(BOOK, CANDIDATES, DGV, (), HedgeConfig(risk_aversion=1.0))
+    snapshot = flat_snapshot()
+    usable, _ = _filter_candidates(problem, snapshot)
+    book = value_book(problem.book, snapshot)
+    empty = np.zeros((0, len(usable)))
+    program = _Program(problem, usable, dict(book.by_underlying), np.zeros(0), empty)
+    lots = np.zeros(len(usable), dtype=np.int64)
+    lots[1] = 3
+    solved = program.solve()
+    assert _regret(program, usable, solved.objective, usable, solved.lots) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    assert _regret(program, usable[2:], 1.0, usable, lots) == float("inf")
+
+
+def test_stock_moving_with_spot_is_not_instability():
+    p = solve(
+        candidates=(stock_candidate(),),
+        targets=(GreekTarget("XYZ", GreekName.DELTA, weight=1.0),),
+        run_stability=True,
+    )
+    assert p.stability is not None
+    assert p.stability.lot_change_ratio == 0.0
+    assert p.stability.is_stable
+
+
+def test_stability_is_measured_even_when_the_usable_candidates_change():
+    # Regression: lots were only compared when both solves had the same candidate count. On a real
+    # chain, a perturbation changed the set, the comparison was skipped, and it reported 0.0.
+    from greeks_neutralizer.domain import Quote as QuoteType
+    from greeks_neutralizer.hedging.diagnostics import _contract_lots
+    from greeks_neutralizer.hedging.optimizer import _filter_candidates
+
+    problem = HedgeProblem(BOOK, CANDIDATES, DGV, (), HedgeConfig(risk_aversion=10.0))
+    usable, _ = _filter_candidates(problem, flat_snapshot())
+    lots = np.zeros(len(usable), dtype=np.int64)
+    lots[1] = 5
+    lots[0] = 1000
+    held = _contract_lots(usable, lots)
+    assert held == {usable[1].candidate.instrument.key: 5}
+    # Keyed by instrument, so that another candidate list compares correctly.
+    reversed_usable = list(reversed(usable))
+    assert _contract_lots(reversed_usable, lots[::-1]) == held
+    assert isinstance(usable[0].candidate.quote, QuoteType)
 
 
 def test_stability_report_on_diversified_hedges():

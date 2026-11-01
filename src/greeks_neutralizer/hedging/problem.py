@@ -119,6 +119,7 @@ class HedgeConfig:
     require_quote_size: bool = True
     allow_extrapolated_vol: bool = False
     instability_threshold: float = 0.5
+    regret_threshold: float = 0.1
 
     def __post_init__(self) -> None:
         if self.risk_aversion < 0.0 or self.cvar_weight < 0.0:
@@ -205,13 +206,15 @@ class VerificationReport:
 class StabilityReport:
     """How much the answer depends on inputs that are themselves estimates.
 
-    `lot_change_ratio` is the worst L1 change in lots after re-solving under a perturbed market,
-    divided by the base solution's lots. `drift` is the worst dollar change in a held hedge's
-    penalized residual without re-solving.
+    `lot_change_ratio` is the worst change in option contracts after re-solving under a perturbed
+    market, as a share of the base trade's contracts. `regret_ratio` is how much worse today's hedge
+    is than the re-solved one in that market, as a share of the benefit of hedging. `drift` is the
+    dollar change in a held hedge's penalized residual. `condition_number` is for inspection only.
     """
 
     condition_number: float
     lot_change_ratio: float
+    regret_ratio: float
     drift: Mapping[str, float]
     is_stable: bool
     notes: tuple[str, ...]

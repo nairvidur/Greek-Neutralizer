@@ -224,6 +224,7 @@ def main() -> None:
         else {
             "condition_number": proposal.stability.condition_number,
             "lot_change_ratio": proposal.stability.lot_change_ratio,
+            "regret_ratio": proposal.stability.regret_ratio,
             "is_stable": proposal.stability.is_stable,
             "notes": list(proposal.stability.notes),
         },

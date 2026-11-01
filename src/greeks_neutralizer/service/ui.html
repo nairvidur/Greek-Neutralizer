@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Greeks Neutralizer</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #62666d; --line: #e0e0dc;
+  --accent: #1d5fbf; --accent-ink: #ffffff; --pos: #1a7f4e; --neg: #bf2f2f; --warn-bg: #fdf3dc;
+  --warn-ink: #7a5300; --bad-bg: #fbe6e6; --bad-ink: #8f2020; --ok-bg: #e3f4ea; --ok-ink: #17643d;
+  --heat-neg: 191,47,47; --heat-pos: 26,127,78;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a; --panel: #1e2125; --ink: #e8e9eb; --muted: #a0a5ad; --line: #33373d;
+    --accent: #6ea4ee; --accent-ink: #0d1420; --pos: #57c78f; --neg: #ef7f7f; --warn-bg: #3a2f14;
+    --warn-ink: #f2d38a; --bad-bg: #3d1c1c; --bad-ink: #f5abab; --ok-bg: #173325; --ok-ink: #8fdcb2;
+    --heat-neg: 239,127,127; --heat-pos: 87,199,143;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { margin: 0; font-size: 17px; font-weight: 600; }
+h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.tag { color: var(--muted); font-size: 13px; }
+.spacer { flex: 1; }
+main { display: grid; gap: 16px; padding: 16px 20px 40px; max-width: 1280px; margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); padding: 16px; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;
+  min-width: 0; }
+.wide { grid-column: 1 / -1; }
+textarea { width: 100%; height: 210px; resize: vertical; padding: 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+input { padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); font: inherit; }
+button { padding: 7px 13px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; }
+th:first-child, td:first-child { text-align: left; }
+td.wrap { white-space: normal; text-align: left; min-width: 260px; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.badge.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.badge.bad { background: var(--bad-bg); color: var(--bad-ink); }
+.notice { padding: 10px 12px; border-radius: 6px; margin-top: 10px; overflow-wrap: anywhere; }
+.notice.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.notice.bad { background: var(--bad-bg); color: var(--bad-ink); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.kpi { padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.kpi span { display: block; color: var(--muted); font-size: 12px; }
+.kpi strong { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); padding: 8px 0; }
+.heat td { text-align: center; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+label { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Greeks Neutralizer</h1>
+  <span class="tag">Decision support. It does not route orders.</span>
+  <span class="spacer"></span>
+  <form id="login" class="row" style="margin:0">
+    <label for="token">API token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="Bearer token">
+    <button id="connect" type="submit">Connect</button>
+  </form>
+  <span id="who" class="tag" role="status"></span>
+</header>
+<main>
+  <section>
+    <h2>Hedge request</h2>
+    <label for="request">Book, market, candidates, targets, and config, as JSON</label>
+    <textarea id="request" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="load" disabled>Load sample</button>
+      <button id="propose" class="primary" disabled>Propose hedge</button>
+      <button id="frontier" disabled>Cost vs risk</button>
+      <button id="submit" disabled>Submit for approval</button>
+    </div>
+    <div id="error" role="alert"></div>
+  </section>
+  <section>
+    <h2>Proposal</h2>
+    <div id="summary" class="empty">Connect and propose a hedge to see it here.</div>
+  </section>
+  <section class="wide">
+    <h2>Legs</h2>
+    <div id="legs" class="scroll"><div class="empty">No proposal yet.</div></div>
+  </section>
+  <section>
+    <h2>Risk before and after</h2>
+    <div id="residuals" class="scroll"><div class="empty">No proposal yet.</div></div>
+  </section>
+  <section>
+    <h2>Stress, by full repricing</h2>
+    <div id="stress" class="scroll"><div class="empty">No proposal yet.</div></div>
+  </section>
+  <section>
+    <h2>Book P&amp;L grid: spot against vol</h2>
+    <div id="grid" class="scroll"><div class="empty">Proposing a hedge fills this for the unhedged book.</div></div>
+  </section>
+  <section>
+    <h2>Cost against residual risk</h2>
+    <div id="frontierOut" class="scroll"><div class="empty">Select "Cost vs risk". It includes the do-nothing and delta-only baselines.</div></div>
+  </section>
+  <section class="wide">
+    <h2>Approvals</h2>
+    <div class="row" style="margin:0 0 10px">
+      <label for="reason">Reason, required to reject</label>
+      <input id="reason" type="text" size="40">
+    </div>
+    <div id="approvals" class="scroll"><div class="empty">Nothing submitted.</div></div>
+  </section>
+  <section class="wide">
+    <h2>Audit trail <span id="chain"></span></h2>
+    <div id="audit" class="scroll"><div class="empty">Connect to read the audit trail.</div></div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let token = "", request = null;
+
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => (
+  {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+function fmt(n, digits = 0) {
+  if (n === null || n === undefined) return "n/a";
+  const text = Number(n).toLocaleString(undefined,
+    {minimumFractionDigits: digits, maximumFractionDigits: digits});
+  // A value that rounds to zero should not display a sign.
+  return /^-0(\.0*)?$/.test(text) ? text.slice(1) : text;
+}
+const signed = (n, digits = 0) => (n === null || n === undefined) ? "n/a" :
+  `<span class="${n < 0 ? "neg" : "pos"}">${fmt(n, digits)}</span>`;
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json",
+              ...(options.headers || {})},
+  });
+  const text = await response.text();
+  let body = text;
+  try { body = JSON.parse(text); } catch (_) { /* a ticket export is plain text */ }
+  if (!response.ok) {
+    const detail = body && (body.error || body.detail) || text;
+    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    error.binding = body && body.binding;
+    throw error;
+  }
+  return body;
+}
+
+function showError(error) {
+  const binding = (error && error.binding && error.binding.length)
+    ? `<br>Binding: ${error.binding.map(escapeHtml).join("; ")}` : "";
+  $("error").innerHTML = error
+    ? `<div class="notice bad">${escapeHtml(error.message)}${binding}</div>` : "";
+}
+
+function readRequest() {
+  try { return JSON.parse($("request").value); }
+  catch (e) { throw new Error(`The request is not valid JSON: ${e.message}`); }
+}
+
+async function guarded(button, work) {
+  showError(null);
+  button.disabled = true;
+  try { await work(); } catch (e) { showError(e); } finally { button.disabled = false; }
+}
+
+function table(headers, rows, leftColumns = []) {
+  const cell = (h, i) => `<th scope="col"${leftColumns.includes(i) ? ' style="text-align:left"' : ""}>${escapeHtml(h)}</th>`;
+  return `<table><thead><tr>${headers.map(cell).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${r.join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function renderProposal(p) {
+  const verified = p.verification.passed;
+  const stable = p.stability ? p.stability.is_stable : null;
+  const statusClass = p.status === "unstable" ? "bad" : p.status === "within_gap" ? "warn" : "ok";
+  const worstBefore = Math.min(...Object.values(p.scenario_pnl_before));
+  const worstAfter = Math.min(...Object.values(p.scenario_pnl_after));
+  $("summary").className = "";
+  $("summary").innerHTML = `
+    <div class="row" style="margin:0 0 10px">
+      <span class="badge ${statusClass}">${escapeHtml(p.status)}</span>
+      <span class="badge ${verified ? "ok" : "bad"}">${verified ? "verified by repricing" : "verification failed"}</span>
+      ${stable === true ? `<span class="badge ok">stable</span>` : ""}
+    </div>
+    <div class="kpis">
+      <div class="kpi"><span>Transaction cost</span><strong>${fmt(p.transaction_cost, 2)}</strong></div>
+      <div class="kpi"><span>Net premium</span><strong>${fmt(p.net_premium)}</strong></div>
+      <div class="kpi"><span>Legs</span><strong>${p.legs.length}</strong></div>
+      <div class="kpi"><span>Worst stress before</span><strong>${Number.isFinite(worstBefore) ? signed(worstBefore) : "n/a"}</strong></div>
+      <div class="kpi"><span>Worst stress after</span><strong>${Number.isFinite(worstAfter) ? signed(worstAfter) : "n/a"}</strong></div>
+      <div class="kpi"><span>Excluded candidates</span><strong>${p.excluded.length}</strong></div>
+    </div>
+    ${p.issues.map((i) => `<div class="notice warn">${escapeHtml(i)}</div>`).join("")}`;
+
+  $("legs").innerHTML = p.legs.length ? table(
+    ["Side", "Qty", "Instrument", "Limit", "Premium", "Cost", "Why"],
+    p.legs.map((l) => [
+      `<td><span class="badge ${l.side === "BUY" ? "ok" : "warn"}">${l.side}</span></td>`,
+      `<td>${fmt(Math.abs(l.quantity))}</td>`, `<td style="text-align:left">${escapeHtml(l.description)}</td>`,
+      `<td>${fmt(l.expected_price, 2)}</td>`, `<td>${signed(l.premium)}</td>`,
+      `<td>${fmt(l.transaction_cost, 2)}</td>`, `<td class="wrap">${escapeHtml(l.rationale)}</td>`]),
+    [2, 6]
+  ) : `<div class="empty">0 legs: no trade improves the objective.</div>`;
+
+  $("residuals").innerHTML = table(
+    ["Underlying and Greek", "Before", "After"],
+    p.residuals.map((r) => [
+      `<td>${escapeHtml(r.underlying)} ${escapeHtml(r.greek)}</td>`,
+      `<td>${signed(r.before, 1)}</td>`, `<td>${signed(r.after, 1)}</td>`]));
+
+  const names = Object.keys(p.scenario_pnl_before)
+    .sort((a, b) => p.scenario_pnl_before[a] - p.scenario_pnl_before[b]);
+  $("stress").innerHTML = names.length ? table(["Scenario", "Before", "After"], names.map((n) => [
+    `<td>${escapeHtml(n)}</td>`, `<td>${signed(p.scenario_pnl_before[n])}</td>`,
+    `<td>${signed(p.scenario_pnl_after[n])}</td>`]))
+    : `<div class="empty">0 scenarios in this request.</div>`;
+}
+
+function renderGrid(g) {
+  const peak = Math.max(1, ...g.pnl.flat().map((v) => Math.abs(v)));
+  const cell = (v) => {
+    const alpha = Math.min(Math.abs(v) / peak, 1) * 0.55 + (v === 0 ? 0 : 0.05);
+    const color = v < 0 ? "var(--heat-neg)" : "var(--heat-pos)";
+    return `<td style="background: rgba(${color}, ${alpha.toFixed(3)})">${fmt(v)}</td>`;
+  };
+  $("grid").innerHTML = `<div class="heat">${table(
+    ["Spot \\ Vol", ...g.vol_shocks.map((v) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)} pts`)],
+    g.spot_shocks.map((s, i) => [`<td>${s >= 0 ? "+" : ""}${(s * 100).toFixed(0)}%</td>`, ...g.pnl[i].map(cell)])
+  )}</div>`;
+}
+
+function renderFrontier(data) {
+  $("frontierOut").innerHTML = table(["Choice", "Cost", "Legs", "Residual", "Worst stress"],
+    data.points.map((p) => [
+      `<td>${escapeHtml(p.label)}</td>`, `<td>${fmt(p.transaction_cost, 2)}</td>`, `<td>${p.n_legs}</td>`,
+      `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`]));
+}
+
+async function refreshApprovals() {
+  const data = await api("/v1/proposals");
+  if (!data.count) {
+    $("approvals").innerHTML = `<div class="empty">0 proposals submitted.</div>`;
+    return;
+  }
+  $("approvals").innerHTML = table(["Proposal", "State", "By", "Legs", "Cost", "Actions"],
+    data.proposals.map((r) => {
+      const actions = r.state === "proposed"
+        ? `<button data-act="approve" data-id="${r.id}">Approve</button>
+           <button data-act="reject" data-id="${r.id}">Reject</button>`
+        : (r.state === "approved" || r.state === "exported")
+          ? `<button data-act="tickets" data-id="${r.id}">Download tickets</button>` : "";
+      const cls = r.state === "rejected" ? "bad" : r.state === "proposed" ? "warn" : "ok";
+      return [`<td class="mono">${escapeHtml(r.id.slice(0, 8))}</td>`,
+        `<td><span class="badge ${cls}">${escapeHtml(r.state)}</span></td>`,
+        `<td>${escapeHtml(r.created_by)}</td>`, `<td>${r.proposal.legs.length}</td>`,
+        `<td>${fmt(r.proposal.transaction_cost, 2)}</td>`, `<td><div class="row" style="margin:0;justify-content:flex-end">${actions}</div></td>`];
+    }));
+}
+
+async function refreshAudit() {
+  const data = await api("/v1/audit?limit=25");
+  $("chain").innerHTML = data.chain_ok
+    ? `<span class="badge ok">chain intact, ${data.total} records</span>`
+    : `<span class="badge bad">CHAIN BROKEN at line ${data.first_bad_line}</span>`;
+  $("audit").innerHTML = data.records.length ? table(["Time", "Event", "Actor", "Proposal", "Hash"],
+    data.records.map((r) => [
+      `<td>${escapeHtml(r.at)}</td>`, `<td style="text-align:left">${escapeHtml(r.event)}</td>`,
+      `<td style="text-align:left">${escapeHtml(r.actor)}</td>`,
+      `<td class="mono">${escapeHtml((r.detail.id || "").slice(0, 8))}</td>`,
+      `<td class="mono">${escapeHtml(r.hash.slice(0, 12))}</td>`]), [1, 2])
+    : `<div class="empty">0 audit records.</div>`;
+}
+
+$("login").addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded($("connect"), connect);
+});
+
+async function connect() {
+  token = $("token").value.trim();
+  const me = await api("/v1/whoami");
+  $("who").textContent = `Signed in as ${me.actor}`;
+  ["load", "propose", "frontier", "submit"].forEach((id) => { $(id).disabled = false; });
+  if (!$("request").value) await loadSample();
+  await Promise.all([refreshApprovals(), refreshAudit()]);
+}
+
+async function loadSample() {
+  request = await api("/v1/example");
+  $("request").value = JSON.stringify(request, null, 2);
+}
+$("load").addEventListener("click", () => guarded($("load"), loadSample));
+
+$("propose").addEventListener("click", () => guarded($("propose"), async () => {
+  const body = readRequest();
+  renderProposal(await api("/v1/hedge", {method: "POST", body: JSON.stringify(body)}));
+  renderGrid(await api("/v1/grid", {method: "POST",
+    body: JSON.stringify({book: body.book, market: body.market})}));
+}));
+
+$("frontier").addEventListener("click", () => guarded($("frontier"), async () => {
+  renderFrontier(await api("/v1/frontier", {method: "POST", body: JSON.stringify(readRequest())}));
+}));
+
+$("submit").addEventListener("click", () => guarded($("submit"), async () => {
+  const record = await api("/v1/proposals", {method: "POST", body: JSON.stringify(readRequest())});
+  renderProposal(record.proposal);
+  await Promise.all([refreshApprovals(), refreshAudit()]);
+}));
+
+$("approvals").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-act]");
+  if (!button) return;
+  const {act, id} = button.dataset;
+  guarded(button, async () => {
+    if (act === "approve") {
+      await api(`/v1/proposals/${id}/approve`, {method: "POST", body: "{}"});
+    } else if (act === "reject") {
+      const reason = $("reason").value;
+      await api(`/v1/proposals/${id}/reject`, {method: "POST", body: JSON.stringify({reason})});
+    } else {
+      const text = await api(`/v1/proposals/${id}/tickets`, {method: "POST"});
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([text], {type: "text/csv"}));
+      link.download = `tickets-${id.slice(0, 8)}.csv`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+    await Promise.all([refreshApprovals(), refreshAudit()]);
+  });
+});
+</script>
+</body>
+</html>
