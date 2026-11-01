@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from greeks_neutralizer.domain import LinearInstrument, Position
+from greeks_neutralizer.domain import LinearInstrument, Position, require_symbol
 from greeks_neutralizer.errors import HedgeInfeasibleError, SearchLimitError, ValidationError
 from greeks_neutralizer.hedging.problem import (
     GreekName,
@@ -255,11 +255,13 @@ def hedge_frontier(
     problem: HedgeProblem,
     snapshot: MarketSnapshot,
     risk_aversions: Sequence[float] = (0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0),
+    *,
+    gate_baseline: HedgeConfig | None = None,
 ) -> tuple[FrontierPoint, ...]:
     """Cost against residual risk, always including the baselines a user must be able to beat.
 
     Doing nothing and delta-only are always present, so a recommendation can be judged against the
-    trivial alternatives.
+    trivial alternatives. `gate_baseline` is what each point's gate settings are disclosed against.
     """
     book = value_book(problem.book, snapshot)
     before_scenarios = {}
@@ -280,11 +282,20 @@ def hedge_frontier(
     ]
     delta_only = _delta_only_problem(problem)
     if delta_only is not None:
-        points.append(_point("delta only", None, delta_only, snapshot, problem.targets))
+        points.append(
+            _point("delta only", None, delta_only, snapshot, problem.targets, gate_baseline)
+        )
     for aversion in risk_aversions:
         adjusted = replace(problem, config=replace(problem.config, risk_aversion=aversion))
         points.append(
-            _point(f"risk aversion {aversion:g}", aversion, adjusted, snapshot, problem.targets)
+            _point(
+                f"risk aversion {aversion:g}",
+                aversion,
+                adjusted,
+                snapshot,
+                problem.targets,
+                gate_baseline,
+            )
         )
     return tuple(points)
 
@@ -296,13 +307,13 @@ def _delta_only_problem(problem: HedgeProblem) -> HedgeProblem | None:
         return None
     underlyings = sorted({c.instrument.underlying for c in linear})
     targets = tuple(GreekTarget(u, GreekName.DELTA, weight=1.0) for u in underlyings)
-    config = HedgeConfig(
+    config = replace(
+        problem.config,
         risk_aversion=1.0,
-        max_quote_age=problem.config.max_quote_age,
-        require_quote_size=problem.config.require_quote_size,
-        max_lots_per_leg=problem.config.max_lots_per_leg,
-        mip_node_limit=problem.config.mip_node_limit,
-        time_limit_seconds=problem.config.time_limit_seconds,
+        cvar_weight=0.0,
+        max_legs=None,
+        ticket_cost=0.0,
+        premium_budget=None,
     )
     return HedgeProblem(problem.book, linear, targets, problem.scenarios, config)
 
@@ -313,19 +324,18 @@ def _point(
     problem: HedgeProblem,
     snapshot: MarketSnapshot,
     report_targets: Sequence[GreekTarget],
+    gate_baseline: HedgeConfig | None,
 ) -> FrontierPoint:
     from greeks_neutralizer.hedging.optimizer import solve_hedge
 
     try:
-        proposal = solve_hedge(problem, snapshot)
+        proposal = solve_hedge(problem, snapshot, gate_baseline=gate_baseline)
     except HedgeInfeasibleError as exc:
         reason = "; ".join(exc.binding) or str(exc)
         return _unsolved_point(label, aversion, "infeasible", reason)
     except SearchLimitError as exc:
         return _unsolved_point(label, aversion, "search_limit", str(exc))
-    return _from_proposal(
-        label, aversion, proposal, replace(problem, targets=tuple(report_targets))
-    )
+    return _from_proposal(label, aversion, proposal, report_targets)
 
 
 def _unsolved_point(label: str, aversion: float | None, status: str, reason: str) -> FrontierPoint:
@@ -335,7 +345,10 @@ def _unsolved_point(label: str, aversion: float | None, status: str, reason: str
 
 
 def _from_proposal(
-    label: str, aversion: float | None, proposal: HedgeProposal, problem: HedgeProblem
+    label: str,
+    aversion: float | None,
+    proposal: HedgeProposal,
+    report_targets: Sequence[GreekTarget],
 ) -> FrontierPoint:
     return FrontierPoint(
         label=label,
@@ -343,7 +356,7 @@ def _from_proposal(
         transaction_cost=proposal.transaction_cost,
         gross_lots=proposal.gross_lots,
         n_legs=len(proposal.legs),
-        penalized_residual=_penalized_residual(problem.targets, dict(proposal.after)),
+        penalized_residual=_penalized_residual(report_targets, dict(proposal.after)),
         worst_scenario_pnl=_worst(dict(proposal.scenario_pnl_after)),
         proposal=proposal,
         status=proposal.status.value,
@@ -396,7 +409,12 @@ def hedge_decay_forecast(
     underlying: str,
     days: Sequence[float] = (1.0, 2.0, 5.0, 10.0, 21.0),
 ) -> tuple[DecayStep, ...]:
-    """How the book's exposures drift as time passes with spot and vol unchanged."""
+    """How the book's exposures drift as time passes with spot and vol unchanged.
+
+    An underlying the market does not have raises, since a misspelled one would read as no exposure.
+    """
+    require_symbol("underlying", underlying)
+    snapshot.market(underlying)
     steps: list[DecayStep] = []
     for day in days:
         rolled = shock_snapshot(snapshot, Scenario(f"+{day:g}d", days_forward=day))

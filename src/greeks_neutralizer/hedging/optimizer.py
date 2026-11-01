@@ -1037,12 +1037,17 @@ def _depth_issues(legs: tuple[HedgeLeg, ...], problem: HedgeProblem) -> list[str
 
 
 def solve_hedge(
-    problem: HedgeProblem, snapshot: MarketSnapshot, *, run_stability: bool = False
+    problem: HedgeProblem,
+    snapshot: MarketSnapshot,
+    *,
+    run_stability: bool = False,
+    gate_baseline: HedgeConfig | None = None,
 ) -> HedgeProposal:
     """Solve, read back, verify independently, and report. Raises rather than returning a bad plan.
 
     Raises HedgeInfeasibleError with the binding constraints when nothing satisfies the bands, and
-    VerificationError if the solution fails its independent repricing.
+    VerificationError if the solution fails its independent repricing. `gate_baseline` is what gate
+    settings are disclosed against: a service's limits, or the library defaults if omitted.
     """
     from greeks_neutralizer.hedging.diagnostics import stability_report
 
@@ -1051,11 +1056,11 @@ def solve_hedge(
     book = value_book(problem.book, snapshot)
     issues = list(book.issues)
     config = problem.config
-    overrides = gate_overrides(config)
+    overrides = gate_overrides(config, gate_baseline)
     issues.extend(_coverage_issues(problem, snapshot, usable, excluded))
     if overrides:
         shown = ", ".join(f"{name}={value}" for name, value in overrides.items())
-        issues.append(f"GATE_SETTINGS gates changed from their defaults: {shown}")
+        issues.append(f"GATE_SETTINGS gates differ from their standing values: {shown}")
 
     book_scenario = book_scenario_pnl(problem.book, snapshot, problem.scenarios)
     unit_scenario = (

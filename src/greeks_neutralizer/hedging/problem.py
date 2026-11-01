@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 from greeks_neutralizer.data.quality import QualityPolicy
 from greeks_neutralizer.domain import (
@@ -202,6 +203,9 @@ _GATES: tuple[tuple[str, str, bool], ...] = (
     ("max_lots_per_leg", "max_lots_per_leg", True),
     ("allow_extrapolated_vol", "allow_extrapolated_vol", True),
     ("require_quote_size", "require_quote_size", False),
+    ("mip_gap", "mip_gap", True),
+    ("time_limit_seconds", "time_limit_seconds", True),
+    ("mip_node_limit", "mip_node_limit", True),
 )
 
 
@@ -210,13 +214,24 @@ def _gate_value(config: HedgeConfig, attribute: str) -> float | bool:
     return value.total_seconds() if isinstance(value, timedelta) else value
 
 
-def gate_overrides(config: HedgeConfig) -> dict[str, float | bool]:
-    """Every gate not at its library default, whichever way it moved, for an approver to see."""
-    default = HedgeConfig()
+def gate_fields(config: HedgeConfig) -> dict[str, Any]:
+    """The gates of `config` as HedgeConfig arguments, so another config can start from them."""
+    return {attribute: getattr(config, attribute) for _, attribute, _ in _GATES}
+
+
+def gate_overrides(
+    config: HedgeConfig, baseline: HedgeConfig | None = None
+) -> dict[str, float | bool]:
+    """Every gate not at `baseline`, whichever way it moved, for an approver to see.
+
+    A service passes its limits, which are what a request gets by omitting a gate. With no
+    deployment the baseline is the library defaults.
+    """
+    standing = baseline if baseline is not None else HedgeConfig()
     return {
         name: _gate_value(config, attribute)
         for name, attribute, _ in _GATES
-        if _gate_value(config, attribute) != _gate_value(default, attribute)
+        if _gate_value(config, attribute) != _gate_value(standing, attribute)
     }
 
 
@@ -391,6 +406,7 @@ __all__ = [
     "RunManifest",
     "StabilityReport",
     "VerificationReport",
+    "gate_fields",
     "gate_overrides",
     "loosened_gates",
 ]

@@ -12,7 +12,10 @@ Configuration, from the environment only:
   GN_MAX_MARKET_AGE_SECONDS  oldest market a proposal can be submitted on, default 900
   GN_GATE_MAX_QUOTE_AGE_SECONDS, GN_GATE_INSTABILITY_THRESHOLD, GN_GATE_REGRET_THRESHOLD,
   GN_GATE_MAX_MODEL_QUOTE_VOL_GAP, GN_GATE_MAX_LOTS_PER_LEG, GN_GATE_ALLOW_EXTRAPOLATED_VOL,
-  GN_GATE_REQUIRE_QUOTE_SIZE  the loosest a request may set each gate, default the library default
+  GN_GATE_REQUIRE_QUOTE_SIZE, GN_GATE_MIP_GAP, GN_GATE_TIME_LIMIT_SECONDS, GN_GATE_MIP_NODE_LIMIT
+                 each gate's limit, default the library default. A request that omits a gate gets
+                 this limit, and one that sets it looser gets a 422. GATE_SETTINGS and
+                 gate_overrides then list only what a request set differently from these limits
 """
 
 from __future__ import annotations
@@ -42,19 +45,26 @@ from greeks_neutralizer.errors import (
     ValidationError,
 )
 from greeks_neutralizer.examples import example_request
-from greeks_neutralizer.hedging.diagnostics import hedge_frontier
+from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast, hedge_frontier
 from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
 from greeks_neutralizer.hedging.problem import HedgeConfig, HedgeProblem, loosened_gates
 from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.book import value_book
-from greeks_neutralizer.risk.measures import expiry_risks
+from greeks_neutralizer.risk.measures import check_limits, expiry_ladder, expiry_risks
 from greeks_neutralizer.risk.scenarios import book_scenario_pnl, spot_vol_grid
 from greeks_neutralizer.schema import (
     SCENARIO_SETS,
     book_to_json,
+    breaches_to_json,
     check_fields,
+    decay_to_json,
+    ladder_to_json,
+    liquidity_estimates,
+    liquidity_to_json,
     parse_book,
+    parse_days,
     parse_hedge_request,
+    parse_limits,
     parse_market,
     proposal_to_json,
 )
@@ -89,7 +99,10 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def _gate_limits_from_env() -> HedgeConfig:
-    """The loosest gates this service accepts. Unset means the library default: no loosening."""
+    """This service's gates: what an omitted gate takes, and the loosest a request may set.
+
+    Unset means the library default, so there is no loosening.
+    """
     base = HedgeConfig()
     env = os.environ
     return HedgeConfig(
@@ -110,6 +123,9 @@ def _gate_limits_from_env() -> HedgeConfig:
             "GN_GATE_ALLOW_EXTRAPOLATED_VOL", base.allow_extrapolated_vol
         ),
         require_quote_size=_env_flag("GN_GATE_REQUIRE_QUOTE_SIZE", base.require_quote_size),
+        mip_gap=float(env.get("GN_GATE_MIP_GAP", base.mip_gap)),
+        time_limit_seconds=float(env.get("GN_GATE_TIME_LIMIT_SECONDS", base.time_limit_seconds)),
+        mip_node_limit=int(env.get("GN_GATE_MIP_NODE_LIMIT", base.mip_node_limit)),
     )
 
 
@@ -147,6 +163,19 @@ def _record_json(record: ProposalRecord) -> dict[str, Any]:
     }
 
 
+def _record_summary(record: ProposalRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "state": record.state.value,
+        "status": record.proposal.status.value,
+        "issue_count": len(record.proposal.issues),
+        "created_by": record.created_by,
+        "created_at": record.created_at.isoformat(),
+        "leg_count": len(record.proposal.legs),
+        "transaction_cost": record.proposal.transaction_cost,
+    }
+
+
 def create_app(
     tokens: dict[str, str] | None = None,
     audit_path: Path | None = None,
@@ -177,7 +206,7 @@ def create_app(
     app.state.counts = {"requests": 0, "errors": 0}
 
     def parse_within_limits(payload: dict[str, Any]) -> tuple[HedgeProblem, MarketSnapshot, bool]:
-        problem, snapshot, stability = parse_hedge_request(payload)
+        problem, snapshot, stability = parse_hedge_request(payload, gate_defaults=limits)
         loosened = loosened_gates(problem.config, limits)
         if loosened:
             raise ValidationError(
@@ -348,15 +377,53 @@ def create_app(
             }
         )
 
+    @app.post("/v1/ladder")
+    def ladder(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        """Option exposures by New York expiry date, shortest first."""
+        check_fields(payload, "request", {"book", "market"})
+        book = parse_book(payload.get("book"))
+        snapshot = parse_market(payload.get("market"))
+        return _safe(ladder_to_json(expiry_ladder(book, snapshot)))
+
+    @app.post("/v1/limits")
+    def limits_check(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        """Which of the limits in the request this book breaches. It only reports."""
+        check_fields(payload, "request", {"book", "market", "limits"})
+        book = parse_book(payload.get("book"))
+        snapshot = parse_market(payload.get("market"))
+        risk_limits = parse_limits(payload.get("limits"))
+        breaches = check_limits(book, snapshot, risk_limits)
+        return _safe(breaches_to_json(breaches, len(risk_limits)))
+
+    @app.post("/v1/liquidity")
+    def liquidity(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        """Half-spread cost and days to exit, from the spread and volume the request supplies."""
+        check_fields(payload, "request", {"lines"})
+        return _safe(liquidity_to_json(liquidity_estimates(payload.get("lines"))))
+
+    @app.post("/v1/decay")
+    def decay(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        """How one underlying's exposures drift as time passes, with spot and vol unchanged."""
+        check_fields(payload, "request", {"book", "market", "underlying"}, {"days"})
+        book = parse_book(payload.get("book"))
+        snapshot = parse_market(payload.get("market"))
+        underlying = payload["underlying"]
+        if "days" in payload:
+            steps = hedge_decay_forecast(book, snapshot, underlying, parse_days(payload["days"]))
+        else:
+            steps = hedge_decay_forecast(book, snapshot, underlying)
+        return _safe(decay_to_json(steps, underlying))
+
     @app.post("/v1/hedge")
     def hedge(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
         problem, snapshot, stability = parse_within_limits(payload)
-        return _safe(proposal_to_json(solve_hedge(problem, snapshot, run_stability=stability)))
+        proposal = solve_hedge(problem, snapshot, run_stability=stability, gate_baseline=limits)
+        return _safe(proposal_to_json(proposal))
 
     @app.post("/v1/frontier")
     def frontier(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
         problem, snapshot, _ = parse_within_limits(payload)
-        points = hedge_frontier(problem, snapshot)
+        points = hedge_frontier(problem, snapshot, gate_baseline=limits)
         return _safe(
             {
                 "points": [
@@ -379,13 +446,24 @@ def create_app(
     @app.post("/v1/proposals", status_code=201)
     def submit(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
         problem, snapshot, stability = parse_within_limits(payload)
-        proposal = solve_hedge(problem, snapshot, run_stability=stability)
+        proposal = solve_hedge(problem, snapshot, run_stability=stability, gate_baseline=limits)
         return _safe(_record_json(store.submit(proposal, user)))
 
     @app.get("/v1/proposals")
-    def list_proposals(user: str = Depends(actor)) -> dict[str, Any]:
+    def list_proposals(
+        limit: int = Query(50, ge=1, le=500), user: str = Depends(actor)
+    ) -> dict[str, Any]:
+        """Summaries, newest first. `total` shows when `limit` cut the list. A full proposal comes
+        from GET /v1/proposals/{id}."""
         records = store.list()
-        return _safe({"count": len(records), "proposals": [_record_json(r) for r in records]})
+        shown = records[:limit]
+        return _safe(
+            {
+                "total": len(records),
+                "count": len(shown),
+                "proposals": [_record_summary(r) for r in shown],
+            }
+        )
 
     @app.get("/v1/proposals/{record_id}")
     def get_proposal(record_id: str, user: str = Depends(actor)) -> dict[str, Any]:

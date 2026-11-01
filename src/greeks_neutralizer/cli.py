@@ -10,7 +10,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -61,8 +61,30 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
     frontier = commands.add_parser("frontier", help="Cost against risk, with baselines")
     frontier.add_argument("--request", type=Path, required=True)
 
+    ladder = commands.add_parser("ladder", help="Option exposures by expiry date")
+    ladder.add_argument("--book", type=Path, required=True)
+    ladder.add_argument("--market", type=Path, required=True)
+    ladder.add_argument("--full", action="store_true", help="Include every exposure")
+
+    limits = commands.add_parser("limits", help="Report which risk limits a book breaches")
+    limits.add_argument("--book", type=Path, required=True)
+    limits.add_argument("--market", type=Path, required=True)
+    limits.add_argument("--limits", type=Path, required=True, help="JSON list of limits")
+
+    liquidity = commands.add_parser("liquidity", help="Half-spread cost and days to exit")
+    liquidity.add_argument("--lines", type=Path, required=True, help="JSON list of lines")
+
+    decay = commands.add_parser("decay", help="How exposures drift as time passes")
+    decay.add_argument("--book", type=Path, required=True)
+    decay.add_argument("--market", type=Path, required=True)
+    decay.add_argument("--underlying", required=True)
+    decay.add_argument("--days", type=float, nargs="+", help="Days forward, default 1 2 5 10 21")
+    decay.add_argument("--full", action="store_true", help="Include every exposure")
+
     example = commands.add_parser("example", help="Print a runnable sample request")
-    example.add_argument("--kind", default="hedge", choices=["hedge", "book", "market"])
+    example.add_argument(
+        "--kind", default="hedge", choices=["hedge", "book", "market", "limits", "liquidity"]
+    )
     return parser, dict(commands.choices)
 
 
@@ -83,7 +105,17 @@ def _home() -> dict[str, Any]:
         "bin": binary,
         "description": DESCRIPTION,
         "version": __version__,
-        "commands": ["value", "stress", "hedge", "frontier", "example"],
+        "commands": [
+            "value",
+            "stress",
+            "hedge",
+            "frontier",
+            "ladder",
+            "limits",
+            "liquidity",
+            "decay",
+            "example",
+        ],
         "help": [
             "Run `gn example --kind hedge > request.json` for a runnable sample",
             "Run `gn hedge --request request.json` to propose a hedge",
@@ -232,10 +264,106 @@ def _cmd_frontier(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _cmd_example(args: argparse.Namespace) -> Any:
-    from greeks_neutralizer.examples import example_book, example_market, example_request
+_EXPOSURE_SUMMARY = ("delta_dollars", "gamma_1pct", "vega_1pt", "theta_1d")
 
-    return {"hedge": example_request, "book": example_book, "market": example_market}[args.kind]()
+
+def _exposure_row(exposure: dict[str, float], full: bool) -> dict[str, float]:
+    return exposure if full else {name: exposure[name] for name in _EXPOSURE_SUMMARY}
+
+
+def _cmd_ladder(args: argparse.Namespace) -> dict[str, Any]:
+    from greeks_neutralizer.risk.measures import expiry_ladder
+    from greeks_neutralizer.schema import ladder_to_json, parse_book, parse_market
+
+    book = parse_book(_load(args.book))
+    data = ladder_to_json(expiry_ladder(book, parse_market(_load(args.market))))
+    if not data["count"]:
+        return {"ladder": "0 option lines: nothing to ladder"}
+    out: dict[str, Any] = {
+        "expiries": data["count"],
+        "ladder": [
+            {
+                "expiry": bucket["expiry"],
+                "lines": bucket["n_lines"],
+                **_exposure_row(bucket["exposure"], args.full),
+            }
+            for bucket in data["buckets"]
+        ],
+    }
+    if not args.full:
+        out["help"] = ["Run with --full for every exposure"]
+    return out
+
+
+def _cmd_limits(args: argparse.Namespace) -> dict[str, Any]:
+    from greeks_neutralizer.risk.measures import check_limits
+    from greeks_neutralizer.schema import (
+        breaches_to_json,
+        parse_book,
+        parse_limits,
+        parse_market,
+    )
+
+    limits = parse_limits(_load(args.limits))
+    book = parse_book(_load(args.book))
+    breaches = check_limits(book, parse_market(_load(args.market)), limits)
+    data = breaches_to_json(breaches, len(limits))
+    return {
+        "checked": data["checked"],
+        "breached": data["breached"],
+        "breaches": data["breaches"] or f"0 of {data['checked']} limits breached",
+    }
+
+
+def _cmd_liquidity(args: argparse.Namespace) -> dict[str, Any]:
+    from greeks_neutralizer.schema import liquidity_estimates, liquidity_to_json
+
+    data = liquidity_to_json(liquidity_estimates(_load(args.lines)))
+    if not data["count"]:
+        return {"lines": "0 lines: nothing to estimate"}
+    return data
+
+
+def _cmd_decay(args: argparse.Namespace) -> dict[str, Any]:
+    from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast
+    from greeks_neutralizer.schema import decay_to_json, parse_book, parse_market
+
+    book = parse_book(_load(args.book))
+    snapshot = parse_market(_load(args.market))
+    if args.days is None:
+        steps = hedge_decay_forecast(book, snapshot, args.underlying)
+    else:
+        steps = hedge_decay_forecast(book, snapshot, args.underlying, args.days)
+    data = decay_to_json(steps, args.underlying)
+    out: dict[str, Any] = {
+        "underlying": data["underlying"],
+        "decay": [
+            {"days": step["days_forward"], **_exposure_row(step["exposure"], args.full)}
+            for step in data["steps"]
+        ],
+    }
+    if not args.full:
+        out["help"] = ["Run with --full for every exposure"]
+    return out
+
+
+def _cmd_example(args: argparse.Namespace) -> Any:
+    from greeks_neutralizer.examples import (
+        example_book,
+        example_limits,
+        example_liquidity,
+        example_market,
+        example_request,
+    )
+
+    samples: dict[str, Callable[[], Any]] = {
+        "hedge": example_request,
+        "book": example_book,
+        "market": example_market,
+        "limits": example_limits,
+        "liquidity": example_liquidity,
+    }
+    return samples[args.kind]()
 
 
 def _capture_native_stdout() -> int:
@@ -307,6 +435,10 @@ def _run(args: argparse.Namespace, fd: int, encode: Any) -> int:
         "stress": _cmd_stress,
         "hedge": _cmd_hedge,
         "frontier": _cmd_frontier,
+        "ladder": _cmd_ladder,
+        "limits": _cmd_limits,
+        "liquidity": _cmd_liquidity,
+        "decay": _cmd_decay,
         "example": _cmd_example,
     }
     from greeks_neutralizer.errors import GNError, HedgeInfeasibleError

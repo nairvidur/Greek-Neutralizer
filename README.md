@@ -15,6 +15,7 @@ Read `docs/limitations.md` before relying on it.
 - **Verifies** each proposal by repricing the hedged book from scratch, and raises rather than returning one that fails.
 - **Tests stability** by re-solving under small market changes and measuring what being wrong would cost.
 - **Stresses** books by full repricing, across historical and hypothetical scenarios.
+- **Reports** expiry ladders, risk limit breaches, liquidity-adjusted exit costs, and hedge decay forecasts.
 - **Governs** hedges with four-eyes approval, expiry, and a hash-chained audit trail, ending in CSV or FIX tickets.
 - **Backtests** policies point in time, with bootstrap confidence intervals.
 
@@ -41,6 +42,12 @@ gn example --kind book > book.json
 gn example --kind market > market.json
 gn value --book book.json --market market.json
 gn stress --book book.json --market market.json --set historical
+gn ladder --book book.json --market market.json
+gn example --kind limits > limits.json
+gn limits --book book.json --market market.json --limits limits.json
+gn example --kind liquidity > lines.json
+gn liquidity --lines lines.json
+gn decay --book book.json --market market.json --underlying XYZ --days 1 5 10
 ```
 
 As a library:

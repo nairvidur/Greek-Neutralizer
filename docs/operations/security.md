@@ -33,7 +33,8 @@ Keep `/healthz` and `/metrics` off the public path, because they are unauthentic
 | Stability required | A proposal with legs must have run its stability check to be submitted |
 | Input validation | Unknown fields rejected, and types and values checked at construction. Instrument symbols are limited to a strict character set, so they cannot inject ticket fields or spreadsheet formulas |
 | Request size | Limited by `GN_MAX_BODY`. Any request with `Transfer-Encoding` is refused, because a chunked body is not bounded by a declared length |
-| Gate settings | A request cannot loosen a fail-closed gate past this service's limit, which is a 422 naming the setting. Limits come from the `GN_GATE_*` environment settings and default to the library defaults, so a default deployment allows no loosening. Tightening stays allowed. Any non-default gate adds a `GATE_SETTINGS` issue and goes into the audit record |
+| Gate settings | Fail-closed gates include the solver's `mip_gap`, `time_limit_seconds`, and `mip_node_limit`. Each has a limit from a `GN_GATE_*` environment setting, defaulting to the library default. A request that omits a gate gets the limit, one that sets it looser gets a 422 naming the setting, and tightening stays allowed. A gate that differs from the limit adds a `GATE_SETTINGS` issue and goes into the audit record. With no deployment, as in the library and CLI, the comparison is with the library defaults |
+| Who can loosen a gate | **Only whoever sets the environment.** A limit looser than the library default applies to every request that omits the gate, with no `GATE_SETTINGS` issue, because it is the deployment's standing policy. Treat such a setting as a risk decision and record it in your change control |
 | Approver sees the proposal | In the UI, approval rows show status and issue count, and Approve stays disabled until that proposal has been opened. This is a UI control: the API does not enforce it |
 | No order routing | The package has no way to send an order |
 | Dependency audit | `pip-audit` in CI |
@@ -64,7 +65,7 @@ These are required before a regulated production deployment:
 | Silent wrong hedge | Independent repricing, and raising on mismatch | Shared model assumptions are not caught by repricing |
 | Bad market data | Quality gates fail closed | A plausible but wrong quote passes |
 | Audit tampering | Hash chain checked on health | See above |
-| Malicious JSON | Strict schema and a size limit | A large in-limit problem can use CPU for the solver's time limit |
+| Malicious JSON | Strict schema, a size limit, and solver limits a request cannot raise | A large in-limit problem can use CPU up to `GN_GATE_TIME_LIMIT_SECONDS` per solve, and one proposal runs several solves |
 | Browser injection | All rendered values are escaped | The token lives in page memory, and there is no CSP header yet |
 
 ## Regulatory notes

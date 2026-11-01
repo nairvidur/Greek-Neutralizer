@@ -406,8 +406,7 @@ class ProposalStore:
     def export_tickets(self, record_id: str, actor: str, fmt: str = "csv") -> str:
         """Tickets for an approved, still-fresh proposal. Limit prices are the quoted touch."""
         _require_actor(actor)
-        text = {"csv": tickets_csv, "fix": tickets_fix}.get(fmt)
-        if text is None:
+        if fmt not in ("csv", "fix"):
             raise ValidationError(f"unknown ticket format {fmt!r}; valid: csv, fix")
         with self._lock:
             now = self.clock()
@@ -419,7 +418,11 @@ class ProposalStore:
             self._check_chain()
             self._check_fresh(record, now)
             self._check_market_fresh(record.proposal, now)
-            output = text(record.proposal, record.id)
+            output = (
+                tickets_fix(record.proposal, record.id, now)
+                if fmt == "fix"
+                else tickets_csv(record.proposal, record.id)
+            )
             self.audit.append(
                 "exported",
                 actor,
@@ -494,12 +497,14 @@ def tickets_csv(proposal: HedgeProposal, proposal_id: str) -> str:
     return buffer.getvalue()
 
 
-def tickets_fix(proposal: HedgeProposal, proposal_id: str) -> str:
+def tickets_fix(proposal: HedgeProposal, proposal_id: str, transact_time: datetime) -> str:
     """FIX 4.4 NewOrderSingle message bodies, pipe-delimited, one per leg.
 
     Application fields only: session headers, sequence numbers, and checksums belong to the sender's
     FIX engine. Review them against your broker's rules of engagement; none has certified this.
+    TransactTime is the export time, in UTC, so the audited hash of the export covers it.
     """
+    stamp = transact_time.astimezone(UTC).strftime("%Y%m%d-%H:%M:%S")
     lines: list[str] = []
     for index, leg in enumerate(proposal.legs, start=1):
         instrument = leg.instrument
@@ -511,6 +516,7 @@ def tickets_fix(proposal: HedgeProposal, proposal_id: str) -> str:
             (40, "2"),
             (44, f"{leg.expected_price:.4f}"),
             (59, "0"),
+            (60, stamp),
         ]
         if isinstance(instrument, OptionContract):
             fields += [

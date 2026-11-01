@@ -450,7 +450,7 @@ def test_fix_maturity_is_in_exchange_time():
         settlement=SettlementKind.CASH,
     )
     proposal = replace(_verified_proposal(), legs=(_leg(contract),))
-    assert "541=20260306|" in tickets_fix(proposal, "abcdefgh")
+    assert "541=20260306|" in tickets_fix(proposal, "abcdefgh", AS_OF)
 
 
 def test_tickets_name_the_listed_root_and_full_terms():
@@ -464,7 +464,7 @@ def test_tickets_name_the_listed_root_and_full_terms():
         exchange_symbol="SPXW",
     )
     proposal = replace(_verified_proposal(), legs=(_leg(contract),))
-    assert "55=SPXW|" in tickets_fix(proposal, "abcdefgh")
+    assert "55=SPXW|" in tickets_fix(proposal, "abcdefgh", AS_OF)
     text = tickets_csv(proposal, "abc")
     header = text.splitlines()[0]
     for column in ("multiplier", "style", "settlement"):

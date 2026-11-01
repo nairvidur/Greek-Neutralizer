@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 from greeks_neutralizer.domain import (
     ExerciseStyle,
@@ -26,6 +26,7 @@ from greeks_neutralizer.domain import (
     require_finite,
 )
 from greeks_neutralizer.errors import GNError, ValidationError
+from greeks_neutralizer.hedging.diagnostics import DecayStep
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -33,6 +34,7 @@ from greeks_neutralizer.hedging.problem import (
     HedgeConfig,
     HedgeProblem,
     HedgeProposal,
+    gate_fields,
 )
 from greeks_neutralizer.market import (
     CashDividend,
@@ -42,22 +44,30 @@ from greeks_neutralizer.market import (
     UnderlyingMarket,
 )
 from greeks_neutralizer.pricing.book import BookValuation
+from greeks_neutralizer.risk.measures import (
+    LadderBucket,
+    LimitBreach,
+    LiquidityEstimate,
+    RiskLimit,
+    liquidity_adjusted_cost,
+)
 from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, HYPOTHETICAL_SHOCKS, Scenario
 from greeks_neutralizer.surface import SviSlice, SviSurface
 
 T = TypeVar("T")
+P = ParamSpec("P")
 JsonDict = Mapping[str, Any]
 
 SCHEMA_VERSION = 1
 
 
-def _typed_errors(parse: Callable[[Any], T]) -> Callable[[Any], T]:
+def _typed_errors(parse: Callable[P, T]) -> Callable[P, T]:
     """An entry point's input errors are ValidationError, whatever a builtin raised on bad types."""
 
     @wraps(parse)
-    def checked(data: Any) -> T:
+    def checked(*args: P.args, **kwargs: P.kwargs) -> T:
         try:
-            return parse(data)
+            return parse(*args, **kwargs)
         except GNError:
             raise
         except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as exc:
@@ -308,7 +318,7 @@ def _parse_scenarios(data: Any) -> tuple[Scenario, ...]:
     return _list_of(data, "scenarios", parse_scenario)
 
 
-def _parse_config(data: Any) -> HedgeConfig:
+def _parse_config(data: Any, gate_defaults: HedgeConfig) -> HedgeConfig:
     d = dict(_require(data, "config"))
     allowed = {
         "risk_aversion",
@@ -333,11 +343,15 @@ def _parse_config(data: Any) -> HedgeConfig:
         seconds = d.pop("max_quote_age_seconds")
         require_finite("max_quote_age_seconds", seconds)
         d["max_quote_age"] = timedelta(seconds=seconds)
-    return HedgeConfig(**d)
+    return HedgeConfig(**{**gate_fields(gate_defaults), **d})
 
 
 @_typed_errors
-def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
+def parse_hedge_request(
+    data: Any, gate_defaults: HedgeConfig | None = None
+) -> tuple[HedgeProblem, MarketSnapshot, bool]:
+    """`gate_defaults` is what a gate left out of the request takes: a service's limits, or the
+    library defaults if omitted."""
     d = _require(data, "request")
     check_fields(
         d,
@@ -356,9 +370,46 @@ def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
         candidates=_list_of(d["candidates"], "candidates", parse_candidate),
         targets=_list_of(d["targets"], "targets", parse_target),
         scenarios=_parse_scenarios(d.get("scenarios", ())),
-        config=_parse_config(d.get("config", {})),
+        config=_parse_config(d.get("config", {}), gate_defaults or HedgeConfig()),
     )
     return problem, parse_market(d["market"]), run_stability
+
+
+def _parse_limit(data: Any) -> RiskLimit:
+    d = _require(data, "limit")
+    check_fields(d, "limit", {"metric", "lower", "upper"}, {"underlying"})
+    return RiskLimit(d["metric"], d["lower"], d["upper"], d.get("underlying"))
+
+
+@_typed_errors
+def parse_limits(data: Any) -> tuple[RiskLimit, ...]:
+    return _list_of(data, "limits", _parse_limit)
+
+
+def _liquidity_line(data: Any) -> LiquidityEstimate:
+    d = _require(data, "line")
+    check_fields(
+        d, "line", {"instrument", "quantity", "half_spread", "adv_contracts"}, {"participation"}
+    )
+    position = Position(parse_instrument(d["instrument"]), d["quantity"])
+    return liquidity_adjusted_cost(
+        position, d["half_spread"], d["adv_contracts"], participation=d.get("participation", 0.1)
+    )
+
+
+@_typed_errors
+def liquidity_estimates(data: Any) -> tuple[LiquidityEstimate, ...]:
+    return _list_of(data, "lines", _liquidity_line)
+
+
+def _parse_day(data: Any) -> float:
+    require_finite("days", data)
+    return float(data)
+
+
+@_typed_errors
+def parse_days(data: Any) -> tuple[float, ...]:
+    return _list_of(data, "days", _parse_day)
 
 
 def instrument_to_json(instrument: Instrument) -> dict[str, Any]:
@@ -412,6 +463,60 @@ def book_to_json(book: BookValuation) -> dict[str, Any]:
             for line in book.lines
         ],
         "issues": list(book.issues),
+    }
+
+
+def ladder_to_json(buckets: Sequence[LadderBucket]) -> dict[str, Any]:
+    return {
+        "count": len(buckets),
+        "buckets": [
+            {
+                "expiry": bucket.expiry.isoformat(),
+                "n_lines": bucket.n_lines,
+                "exposure": bucket.exposure.as_dict(),
+            }
+            for bucket in buckets
+        ],
+    }
+
+
+def breaches_to_json(breaches: Sequence[LimitBreach], checked: int) -> dict[str, Any]:
+    return {
+        "checked": checked,
+        "breached": len(breaches),
+        "breaches": [
+            {
+                "metric": breach.limit.metric,
+                "underlying": breach.limit.underlying,
+                "lower": breach.limit.lower,
+                "upper": breach.limit.upper,
+                "value": breach.value if math.isfinite(breach.value) else None,
+                # Infinity is not valid JSON, and null alone would hide that it was unbounded.
+                "utilization": breach.utilization if math.isfinite(breach.utilization) else None,
+                "utilization_unbounded": math.isinf(breach.utilization),
+            }
+            for breach in breaches
+        ],
+    }
+
+
+def liquidity_to_json(estimates: Sequence[LiquidityEstimate]) -> dict[str, Any]:
+    return {
+        "count": len(estimates),
+        "total_half_spread_cost": sum(e.half_spread_cost for e in estimates),
+        "longest_days_to_unwind": max((e.days_to_unwind for e in estimates), default=0.0),
+        "lines": [asdict(estimate) for estimate in estimates],
+    }
+
+
+def decay_to_json(steps: Sequence[DecayStep], underlying: str) -> dict[str, Any]:
+    return {
+        "underlying": underlying,
+        "count": len(steps),
+        "steps": [
+            {"days_forward": step.days_forward, "exposure": step.exposure.as_dict()}
+            for step in steps
+        ],
     }
 
 

@@ -42,6 +42,20 @@ def example_book(as_of: datetime = DEFAULT_AS_OF) -> list[dict[str, Any]]:
     ]
 
 
+def example_limits() -> list[dict[str, Any]]:
+    return [
+        {"metric": "delta_dollars", "lower": -5000.0, "upper": 5000.0, "underlying": "XYZ"},
+        {"metric": "vega_1pt", "lower": -1000.0, "upper": 1000.0},
+    ]
+
+
+def example_liquidity(as_of: datetime = DEFAULT_AS_OF) -> list[dict[str, Any]]:
+    return [
+        {**position, "half_spread": 0.05, "adv_contracts": 2000.0}
+        for position in example_book(as_of)
+    ]
+
+
 def _candidate(right: str, strike: float, days: int, as_of: datetime) -> dict[str, Any]:
     omega = 1.0 if right == "call" else -1.0
     price = float(black_greeks(_SPOT, strike, days / 365.0, _RATE, 0.0, _VOL, omega).price[0])

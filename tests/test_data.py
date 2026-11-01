@@ -21,7 +21,7 @@ from greeks_neutralizer.data.quality import (
     assess_quote,
     is_usable,
 )
-from greeks_neutralizer.data.symbology import OsiSymbol, parse_osi
+from greeks_neutralizer.data.symbology import parse_osi
 from greeks_neutralizer.domain import (
     ExerciseStyle,
     OptionContract,
@@ -51,12 +51,6 @@ def quote(bid=1.0, ask=1.1, bs=10, a_s=10, age=0.0):
 def test_parse_osi(text, root, right, strike):
     parsed = parse_osi(text)
     assert (parsed.root, parsed.right, parsed.strike) == (root, right, strike)
-
-
-def test_osi_round_trip():
-    original = "SPY   270129P00741500"
-    assert parse_osi(original).format() == original
-    assert isinstance(parse_osi(original), OsiSymbol)
 
 
 @pytest.mark.parametrize("bad", ["", "SPY", "SPY261399C00100000", "SPY261113X00100000"])

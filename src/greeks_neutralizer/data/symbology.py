@@ -19,13 +19,6 @@ class OsiSymbol:
     right: OptionRight
     strike: float
 
-    def format(self) -> str:
-        strike_int = round(self.strike * 1000)
-        return (
-            f"{self.root:<6}{self.expiry:%y%m%d}"
-            f"{'C' if self.right is OptionRight.CALL else 'P'}{strike_int:08d}"
-        )
-
 
 def parse_osi(symbol: str) -> OsiSymbol:
     """Parse padded or compact OSI. Raises ValidationError rather than guessing."""

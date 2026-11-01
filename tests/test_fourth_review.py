@@ -220,6 +220,9 @@ LOOSER = {
     "max_lots_per_leg": 5001,
     "allow_extrapolated_vol": True,
     "require_quote_size": False,
+    "mip_gap": 0.99,
+    "time_limit_seconds": 1e9,
+    "mip_node_limit": 10_000_000,
 }
 TIGHTER = {
     "max_quote_age_seconds": 5.0,
@@ -227,6 +230,9 @@ TIGHTER = {
     "regret_threshold": 0.05,
     "max_model_quote_vol_gap": 0.04,
     "max_lots_per_leg": 4000,
+    "mip_gap": 0.001,
+    "time_limit_seconds": 10.0,
+    "mip_node_limit": 200,
 }
 
 
@@ -267,10 +273,7 @@ def test_a_deployment_can_raise_its_limit_from_the_environment_and_no_further(
     allowed = _request(max_quote_age_seconds=600.0, require_quote_size=False)
     response = client.post("/v1/hedge", headers=ALICE, json=allowed)
     assert response.status_code == 200
-    assert response.json()["manifest"]["gate_overrides"] == {
-        "max_quote_age_seconds": 600.0,
-        "require_quote_size": False,
-    }
+    assert response.json()["manifest"]["gate_overrides"] == {"max_quote_age_seconds": 600.0}
     past = client.post("/v1/hedge", headers=ALICE, json=_request(max_quote_age_seconds=7200.0))
     assert past.status_code == 422
     assert "max_quote_age_seconds" in past.json()["error"]

@@ -32,14 +32,40 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | Proposal status `unstable` | A small input change moves the trade and costs benefit | Review the notes, and widen the candidates or tighten the universe |
 | Proposal status `within_gap` | Integer lots cost more than the configured gap | Read the `INTEGRALITY_GAP` issue. Usually fine at the stated size, and a weak bound with `max_legs` |
 | 422 `infeasible` | The solver proved, over whole lots and shares at full capacity, that no hedge meets the bands | Read `binding`, then widen those bands or add candidates |
-| 422 `validation`, "looser than its limit" | The request loosens a gate past this service's limit | Use the default, or have whoever owns the deployment raise that `GN_GATE_*` limit. Do not change it to get a trade through |
-| `GATE_SETTINGS` in issues | A fail-closed gate is not at its default | Approvers: decide whether that setting is justified before approving |
-| 422 `search_limit` | The search stopped with no hedge, in the base solve or a stability re-solve. **This does not mean no hedge exists** | Raise `mip_node_limit` or `time_limit_seconds`, or reduce the universe. Do not widen bands because of it |
+| 422 `validation`, "looser than its limit" | The request loosens a gate past this service's limit | Leave the gate out to get the limit, or have whoever owns the deployment raise that `GN_GATE_*` limit. Do not change it to get a trade through |
+| `GATE_SETTINGS` in issues | The request set a fail-closed gate differently from this service's limit | Approvers: decide whether that setting is justified before approving |
+| 422 `search_limit` | The search stopped with no hedge, in the base solve or a stability re-solve. **This does not mean no hedge exists** | Reduce the universe. A request can raise `mip_node_limit` or `time_limit_seconds` only up to `GN_GATE_MIP_NODE_LIMIT` and `GN_GATE_TIME_LIMIT_SECONDS`, so past that it is the deployment owner's decision. Do not widen bands because of it |
 | 422 `market_data` | Data failed closed | Fix the feed. Do not bypass the gate |
 | 409 with `re-propose` | The proposal or its market is too old, or the market is dated in the future | Propose again on current data, after checking the feed's clock if it is in the future. `GN_MAX_MARKET_AGE_SECONDS` sets the market limit |
 | `EXPIRED` in issues | A book contains an expired option | Settle or remove it |
 | `EXTRAPOLATED_VOL` in issues | A strike is beyond the quotes | Treat its value and Greeks as unverified |
 | Many `excluded` candidates | Quotes are stale, crossed, or empty | Check the feed before trusting the result |
+
+## Gate limits
+
+Each `GN_GATE_*` setting is that gate's limit, listed in `src/greeks_neutralizer/service/app.py`.
+A request that omits a gate gets the limit, so tightening one does not break clients or the sample.
+A limit looser than the library default therefore loosens every request that omits the gate, with no `GATE_SETTINGS` issue, so raising one is a risk decision.
+A proposal's `solver_gap` shows how far the hedge may be from the LP bound, whatever status it carries.
+
+## Risk reports
+
+These reprice from the request and store nothing:
+
+| Endpoint | CLI | Reports |
+|---|---|---|
+| `POST /v1/ladder` | `gn ladder` | Option exposures by New York expiry date |
+| `POST /v1/limits` | `gn limits` | Which limits in the request the book breaches, of how many checked |
+| `POST /v1/liquidity` | `gn liquidity` | Half-spread cost and days to exit, from a spread and daily volume the caller supplies |
+| `POST /v1/decay` | `gn decay` | One underlying's exposures as time passes, with spot and vol unchanged |
+
+A breach is a line in a response, and nothing acts on it: see `docs/limitations.md`.
+
+## Listing proposals
+
+`GET /v1/proposals` returns summaries, newest first, 50 by default and at most 500 with `limit`.
+`total` against `count` shows when the list was cut.
+`GET /v1/proposals/{id}` returns the full proposal, which is what the UI's Open fetches.
 
 ## Restart and recovery
 

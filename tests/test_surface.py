@@ -47,7 +47,6 @@ def test_known_butterfly_arbitrage_is_detected():
     vogt = SviSlice(1.0, -0.0410, 0.1331, 0.3060, 0.3586, 0.4153)
     report = SviSurface((vogt,)).arbitrage_report()
     assert report.wing_min_g < 0.0
-    assert not report.wings_clean
 
 
 def test_core_grid_is_scaled_from_at_the_money_variance():

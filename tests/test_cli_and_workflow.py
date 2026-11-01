@@ -33,6 +33,7 @@ from greeks_neutralizer.workflow import (
     tickets_fix,
     verify_audit_log,
 )
+from tests.conftest import AS_OF
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -393,7 +394,7 @@ def test_tickets_match_the_proposal(proposal):
     rows = text.strip().splitlines()
     assert len(rows) == len(proposal.legs) + 1
     assert rows[0].startswith("proposal_id,side,quantity")
-    fix = tickets_fix(proposal, "abcdefghij").strip().splitlines()
+    fix = tickets_fix(proposal, "abcdefghij", AS_OF).strip().splitlines()
     assert len(fix) == len(proposal.legs)
     for message, leg in zip(fix, proposal.legs, strict=True):
         assert "35=D|" in message

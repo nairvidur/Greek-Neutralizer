@@ -48,6 +48,9 @@ FRTB sensitivity export is not implemented.
 
 - Not implemented: Excel add-in, OMS and PMS position import, FIX drop copy, broker APIs, live or paper execution, post-trade slippage analysis, and hedge accounting export.
 - Tickets are generated but have not been certified with any broker.
+- Limit monitoring reports breaches when asked, against limits in the request. There is no stored limit set, continuous monitoring, alerting, acknowledgement, escalation, breach history, or blocking of a proposal.
+- Liquidity estimates use the spread and daily volume the caller supplies. There is no volume feed or market impact model behind them.
+- The expiry ladder, limit checks, liquidity estimates, and hedge decay forecasts are in the API and CLI only, not the web UI.
 - Security gaps are listed in `docs/operations/security.md`, including SSO, RBAC, tenant isolation, and a durable store. No certification is claimed.
 - `exchange_calendars` is optional, and the default session predicate does not know holidays.
 

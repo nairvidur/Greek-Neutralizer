@@ -59,6 +59,9 @@ At a fixed arrival rate, timed from each request's scheduled start so that a sta
 Every race had exactly one 200 and one 409, and the log held exactly 500 `submitted` and 500 `approved` records, with its chain intact.
 There were no 5xx responses in any case.
 
+`GET /v1/proposals` was not load tested.
+Its summaries and `limit` postdate this measurement, and so do the solver gates, deployment defaults for gates, and the risk report endpoints, none of which the requests above use.
+
 Limits this exposed:
 
 - **A real chain is far slower.** The 2,254-candidate SPX hedge takes about 5 seconds, so expect well under one per second per worker. It was not load tested, since the vendor chain is not committed.

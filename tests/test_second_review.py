@@ -132,7 +132,7 @@ def test_the_approver_sees_the_root_the_ticket_names(proposal):
     )
     fields = dict(
         part.split("=")
-        for part in tickets_fix(replace(proposal, legs=(_leg(contract),)), "abc").split("|")
+        for part in tickets_fix(replace(proposal, legs=(_leg(contract),)), "abc", AS_OF).split("|")
         if part.strip()
     )
     assert fields["55"] == "SPXW"
@@ -146,7 +146,7 @@ def test_future_ticket_identifies_the_contract(proposal):
     future = LinearInstrument(
         "ES", "SPX", LinearKind.FUTURE, multiplier=50.0, expiry=EVENING_EXPIRY
     )
-    message = tickets_fix(replace(proposal, legs=(_leg(future),)), "abc").strip().rstrip("|")
+    message = tickets_fix(replace(proposal, legs=(_leg(future),)), "abc", AS_OF).strip().rstrip("|")
     fields = dict(part.split("=") for part in message.split("|"))
     # FIX 4.4: 167 security type, 541 maturity date in exchange time, 231 contract multiplier.
     assert fields["167"] == "FUT"
@@ -156,7 +156,9 @@ def test_future_ticket_identifies_the_contract(proposal):
 
 
 def test_stock_ticket_has_no_maturity(proposal):
-    message = tickets_fix(replace(proposal, legs=(_leg(LinearInstrument("XYZ", "XYZ")),)), "abc")
+    message = tickets_fix(
+        replace(proposal, legs=(_leg(LinearInstrument("XYZ", "XYZ")),)), "abc", AS_OF
+    )
     fields = dict(part.split("=") for part in message.strip().rstrip("|").split("|"))
     assert fields["167"] == "CS"
     assert "541" not in fields

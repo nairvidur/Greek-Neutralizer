@@ -207,6 +207,9 @@ function table(headers, rows, leftColumns = []) {
     <tbody>${rows.map((r) => `<tr>${r.join("")}</tr>`).join("")}</tbody></table>`;
 }
 
+const gapText = (gap) =>
+  gap === null || gap === undefined ? "n/a" : `${(Number(gap) * 100).toFixed(2)}%`;
+
 function renderProposal(p, reviewing = "") {
   const verified = p.verification.passed;
   const stable = p.stability ? p.stability.is_stable : null;
@@ -227,6 +230,7 @@ function renderProposal(p, reviewing = "") {
       <div class="kpi"><span>Worst stress before</span><strong>${Number.isFinite(worstBefore) ? signed(worstBefore) : "n/a"}</strong></div>
       <div class="kpi"><span>Worst stress after</span><strong>${Number.isFinite(worstAfter) ? signed(worstAfter) : "n/a"}</strong></div>
       <div class="kpi"><span>Excluded candidates</span><strong>${p.excluded.length}</strong></div>
+      <div class="kpi"><span>Solver gap</span><strong>${escapeHtml(gapText(p.solver_gap))}</strong></div>
     </div>
     ${p.issues.map((i) => `<div class="notice warn">${escapeHtml(i)}</div>`).join("")}
     ${p.excluded.length ? `<div class="scroll">${table(["Excluded", "Reason"], p.excluded.map((e) => [
@@ -285,11 +289,13 @@ const opened = new Set();
 
 async function refreshApprovals() {
   const data = await api("/v1/proposals");
-  if (!data.count) {
+  if (!data.total) {
     $("approvals").innerHTML = `<div class="empty">0 proposals submitted.</div>`;
     return;
   }
-  $("approvals").innerHTML = table(["Proposal", "State", "Status", "Issues", "By", "Legs", "Cost", "Actions"],
+  const cut = data.count < data.total
+    ? `<div class="empty">Showing the newest ${data.count} of ${data.total} proposals.</div>` : "";
+  $("approvals").innerHTML = cut + table(["Proposal", "State", "Status", "Issues", "By", "Legs", "Cost", "Actions"],
     data.proposals.map((r) => {
       const actions = r.state === "proposed"
         ? `<button data-act="open" data-id="${r.id}">Open</button>
@@ -300,9 +306,9 @@ async function refreshApprovals() {
       const cls = r.state === "rejected" ? "bad" : r.state === "proposed" ? "warn" : "ok";
       return [`<td class="mono">${escapeHtml(r.id.slice(0, 8))}</td>`,
         `<td><span class="badge ${cls}">${escapeHtml(r.state)}</span></td>`,
-        `<td>${statusBadge(r.proposal.status)}</td>`, `<td>${r.proposal.issues.length}</td>`,
-        `<td>${escapeHtml(r.created_by)}</td>`, `<td>${r.proposal.legs.length}</td>`,
-        `<td>${fmt(r.proposal.transaction_cost, 2)}</td>`, `<td><div class="row" style="margin:0;justify-content:flex-end">${actions}</div></td>`];
+        `<td>${statusBadge(r.status)}</td>`, `<td>${r.issue_count}</td>`,
+        `<td>${escapeHtml(r.created_by)}</td>`, `<td>${r.leg_count}</td>`,
+        `<td>${fmt(r.transaction_cost, 2)}</td>`, `<td><div class="row" style="margin:0;justify-content:flex-end">${actions}</div></td>`];
     }));
 }
 

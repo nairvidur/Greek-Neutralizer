@@ -97,10 +97,6 @@ class ArbitrageReport:
     def is_clean(self) -> bool:
         return self.core_min_g >= -1e-9 and self.core_calendar_gap >= -1e-9
 
-    @property
-    def wings_clean(self) -> bool:
-        return self.wing_min_g >= -1e-9 and self.wing_calendar_gap >= -1e-9
-
 
 @dataclass(frozen=True, slots=True)
 class SviSurface:

@@ -10,11 +10,14 @@ import numpy as np
 from scipy.stats import chi2
 
 from greeks_neutralizer.domain import (
+    NEW_YORK,
     ExerciseStyle,
     OptionContract,
     OptionRight,
     Position,
     SettlementKind,
+    require_finite,
+    require_symbol,
 )
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.market import MarketSnapshot
@@ -154,14 +157,15 @@ class LadderBucket:
 def expiry_ladder(
     positions: Sequence[Position], snapshot: MarketSnapshot
 ) -> tuple[LadderBucket, ...]:
-    """Exposures by expiry date, shortest first. Linear lines are excluded: they do not expire."""
+    """Exposures by New York expiry date, shortest first, the same date tickets and descriptions
+    use. Linear lines are excluded: they do not expire."""
     book = value_book(positions, snapshot)
     buckets: dict[date, tuple[int, Exposure]] = {}
     for line in book.lines:
         instrument = line.position.instrument
         if not isinstance(instrument, OptionContract):
             continue
-        day = instrument.expiry.date()
+        day = instrument.expiry.astimezone(NEW_YORK).date()
         count, total = buckets.get(day, (0, Exposure()))
         buckets[day] = (count + 1, total + line.exposure)
     return tuple(
@@ -234,7 +238,8 @@ def expiry_risks(
                             contract.describe(),
                             position.quantity,
                             f"short ITM call: dividend {dividend.amount:g} exceeds time value "
-                            f"{time_value:.3f} before ex-date {dividend.ex_date.date()}",
+                            f"{time_value:.3f} before ex-date "
+                            f"{dividend.ex_date.astimezone(NEW_YORK).date()}",
                         )
                     )
         elif time_value < 0.001 * contract.strike:
@@ -259,6 +264,13 @@ class RiskLimit:
     underlying: str | None = None
 
     def __post_init__(self) -> None:
+        valid = Exposure().as_dict()
+        if not isinstance(self.metric, str) or self.metric not in valid:
+            raise ValidationError(f"unknown risk metric {self.metric!r}; valid: {sorted(valid)}")
+        require_finite(f"limit on {self.metric}: lower", self.lower)
+        require_finite(f"limit on {self.metric}: upper", self.upper)
+        if self.underlying is not None:
+            require_symbol("underlying", self.underlying)
         if self.lower > self.upper:
             raise ValidationError(f"limit on {self.metric}: lower exceeds upper")
 
@@ -273,29 +285,27 @@ class LimitBreach:
 def check_limits(
     positions: Sequence[Position], snapshot: MarketSnapshot, limits: Sequence[RiskLimit]
 ) -> tuple[LimitBreach, ...]:
-    """Breached limits. An unknown metric raises rather than passing as within limits."""
+    """Breached limits. This only reports: it does not store, escalate, or block anything.
+
+    An underlying the market does not have raises, since a misspelled one would read as no exposure
+    and pass. A value that is not a number counts as a breach.
+    """
     book = value_book(positions, snapshot)
     breaches: list[LimitBreach] = []
     for limit in limits:
         if limit.underlying is None:
             value = 0.0
             for exposure in book.by_underlying.values():
-                value += _metric(exposure, limit.metric)
+                value += float(getattr(exposure, limit.metric))
         else:
+            snapshot.market(limit.underlying)
             exposure = book.by_underlying.get(limit.underlying, Exposure())
-            value = _metric(exposure, limit.metric)
-        if value < limit.lower or value > limit.upper:
+            value = float(getattr(exposure, limit.metric))
+        if not limit.lower <= value <= limit.upper:
             bound = limit.upper if value > limit.upper else limit.lower
             utilization = abs(value / bound) if bound != 0.0 else float("inf")
             breaches.append(LimitBreach(limit, float(value), utilization))
     return tuple(breaches)
-
-
-def _metric(exposure: Exposure, name: str) -> float:
-    values = exposure.as_dict()
-    if name not in values:
-        raise ValidationError(f"unknown risk metric {name!r}; valid: {sorted(values)}")
-    return values[name]
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +320,9 @@ def liquidity_adjusted_cost(
     position: Position, half_spread: float, adv_contracts: float, *, participation: float = 0.1
 ) -> LiquidityEstimate:
     """Cost of crossing half the spread to exit and the time to do so at a capped participation."""
+    require_finite("half_spread", half_spread)
+    require_finite("adv_contracts", adv_contracts)
+    require_finite("participation", participation)
     if adv_contracts <= 0.0 or not 0.0 < participation <= 1.0:
         raise ValidationError("adv must be positive and participation in (0, 1]")
     if half_spread < 0.0:
