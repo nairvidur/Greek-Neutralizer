@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import importlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
+from scipy.optimize import least_squares as real_least_squares
 
-from greeks_neutralizer.data.cboe import parse_cboe_delayed
+from greeks_neutralizer import surface as surface_module
+from greeks_neutralizer.data.cboe import ParsedChain, parse_cboe_delayed
 from greeks_neutralizer.data.chain import (
     ChainQuote,
     box_implied_rate,
@@ -31,6 +36,7 @@ from greeks_neutralizer.domain import (
 )
 from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.pricing.black import black_premium
+from greeks_neutralizer.surface import fit_svi_slice
 
 NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
 
@@ -150,6 +156,66 @@ def test_calibration_recovers_smile_from_quotes():
     k = np.array([-0.1, 0.0, 0.1])
     vols = calibration.surface.vol(k, np.full(3, 0.25))
     assert_allclose(vols, 0.2 - 0.1 * k + 0.3 * k * k, atol=0.002)
+
+
+def _unconverged_least_squares(monkeypatch):
+    # The optimizer stops at its evaluation limit, far from any optimum: success False from SciPy,
+    # with a large gradient left. The fit itself stays good, so that no quality gate intervenes.
+    def stopped(*args, **kwargs):
+        result = real_least_squares(*args, **kwargs)
+        result.success = False
+        result.optimality = 1.0
+        return result
+
+    monkeypatch.setattr(surface_module, "least_squares", stopped)
+
+
+def test_a_fit_stopped_early_for_real_is_not_converged(monkeypatch):
+    # No patched result here: two evaluations cannot reach the optimum of this smile.
+    def two_evaluations(*args, **kwargs):
+        return real_least_squares(*args, **{**kwargs, "max_nfev": 2})
+
+    k = np.linspace(-0.2, 0.2, 21)
+    vols = 0.2 - 0.1 * k + 0.3 * k * k
+    assert fit_svi_slice(k, vols, 0.25).converged
+    monkeypatch.setattr(surface_module, "least_squares", two_evaluations)
+    assert not fit_svi_slice(k, vols, 0.25).converged
+
+
+def test_a_clean_calibration_has_no_issue():
+    calibration = calibrate_chain(_chain(D=np.exp(-0.04 * 0.25)), NOW, 100.0, discount_rate=0.04)
+    assert calibration.n_unconverged_fits == 0
+    assert calibration.issues == ()
+
+
+def test_a_fit_that_does_not_converge_raises_an_issue(monkeypatch):
+    _unconverged_least_squares(monkeypatch)
+    calibration = calibrate_chain(_chain(D=np.exp(-0.04 * 0.25)), NOW, 100.0, discount_rate=0.04)
+    assert calibration.n_unconverged_fits == 1
+    assert len(calibration.issues) == 1
+    assert calibration.issues[0].startswith("UNCONVERGED_FIT 1 of 1 expiries")
+
+
+def test_the_reconciliation_output_reports_a_fit_that_did_not_converge(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    reconcile_chain = importlib.import_module("reconcile_chain")
+    chain = [
+        replace(item, vendor_iv=0.2, vendor_delta=0.5, vendor_gamma=0.01)
+        for item in _chain(D=np.exp(-0.04 * 0.25))
+    ]
+    parsed = ParsedChain(chain[0].contract.underlying, 100.0, NOW, tuple(chain), 0, 0, True)
+    monkeypatch.setattr(reconcile_chain, "parse_cboe_delayed", lambda _: parsed)
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}")
+
+    clean = reconcile_chain.reconcile(payload, 0.04)
+    assert clean["fits_unconverged"] == 0
+    assert clean["issues"] == []
+
+    _unconverged_least_squares(monkeypatch)
+    failed = reconcile_chain.reconcile(payload, 0.04)
+    assert failed["fits_unconverged"] == 1
+    assert [issue.split()[0] for issue in failed["issues"]] == ["UNCONVERGED_FIT"]
 
 
 def test_calibration_excludes_blocked_quotes_and_counts_them():

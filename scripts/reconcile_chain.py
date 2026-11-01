@@ -102,6 +102,8 @@ def reconcile(payload_path: Path, rate: float | None) -> dict[str, object]:
         "quality_flags": calibration.flags,
         "expiries_fit": len(calibration.fits),
         "expiries_excluded": len(calibration.excluded_expiries),
+        "fits_unconverged": calibration.n_unconverged_fits,
+        "issues": list(calibration.issues),
         "fit_weighted_rmse_vol_median": float(
             np.median([f.weighted_rmse_vol for f in calibration.fits])
         ),

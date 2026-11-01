@@ -208,9 +208,16 @@ class LinearInstrument:
 Instrument: TypeAlias = OptionContract | LinearInstrument
 
 
+MAX_POSITION_UNITS = 10**12
+
+
 @dataclass(frozen=True, slots=True)
 class Position:
-    """A signed holding. Zero is allowed so a flat line stays visible in a book."""
+    """A signed holding. Zero is allowed so a flat line stays visible in a book.
+
+    The size is limited because arithmetic and the solver both stop being meaningful far past it,
+    and no real book is near it.
+    """
 
     instrument: Instrument
     quantity: int
@@ -219,6 +226,10 @@ class Position:
         if isinstance(self.quantity, bool) or not isinstance(self.quantity, int):
             raise ValidationError(
                 f"quantity must be a signed int, got {type(self.quantity).__name__}"
+            )
+        if abs(self.quantity) > MAX_POSITION_UNITS:
+            raise ValidationError(
+                f"quantity must be at most {MAX_POSITION_UNITS:g} units either way"
             )
         if not isinstance(self.instrument, (OptionContract, LinearInstrument)):
             raise ValidationError(f"unknown instrument type {type(self.instrument).__name__}")

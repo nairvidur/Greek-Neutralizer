@@ -22,6 +22,7 @@ from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.time_model import CALENDAR_CLOCK, VarianceClock, calendar_years
 
 _MAX_PLAUSIBLE_RATE = 1.0
+_MAX_PLAUSIBLE_SPOT = 1e9
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,9 +71,6 @@ class DiscountCurve:
         return np.asarray(
             np.where(short, rates[0], np.where(long, rates[-1], out)), dtype=np.float64
         )
-
-    def bumped(self, shift: float) -> DiscountCurve:
-        return DiscountCurve(self.times, tuple(r + shift for r in self.zero_rates))
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +128,15 @@ class UnderlyingMarket:
 
     def __post_init__(self) -> None:
         require_finite_positive("spot", self.spot)
+        if self.spot > _MAX_PLAUSIBLE_SPOT:
+            raise ValidationError(
+                f"spot {self.spot} is implausible: it must be at most {_MAX_PLAUSIBLE_SPOT:g}"
+            )
         require_finite("carry_yield", self.carry_yield)
+        if abs(self.carry_yield) > _MAX_PLAUSIBLE_RATE:
+            raise ValidationError(
+                f"carry_yield {self.carry_yield} is implausible: rates are decimals, so 5% is 0.05"
+            )
         if not isinstance(self.surface, VolSurface):
             raise ValidationError("surface must implement VolSurface")
 

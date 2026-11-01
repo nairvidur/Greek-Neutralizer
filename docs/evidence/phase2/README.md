@@ -24,6 +24,7 @@ That is a modeling choice, not an error, and this engine documents and uses the 
 Source: Cboe's public delayed-quotes endpoint, retrieved 2026-11-01, with quotes from the 2026-10-30 close.
 This is delayed data used once for reconciliation, not a licensed feed.
 Quote files are not committed, and only the aggregates in `reconcile_SPX.json` and `reconcile_SPY.json` are.
+Those two files predate the `fits_unconverged` and `issues` fields, and take them when next regenerated from a vendor chain.
 
 Reproduce (the discount rate for SPY is the SPX box-implied rate, because parity on American options cannot give it):
 

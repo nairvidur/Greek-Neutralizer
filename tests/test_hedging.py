@@ -267,11 +267,11 @@ def _hard_option_problem(time_limit):
     )
 
 
-def test_answer_does_not_depend_on_how_much_time_the_machine_had(monkeypatch):
-    # Found comparing evidence runs: the wall-clock limit made results vary with machine load, so
-    # a proposal could not be replayed. A long and a short backstop must give the same trade. The
-    # solver runs with no clock at all here, so a slow machine cannot change the outcome, and what
-    # is tested is that the backstop reaches the solver only as a backstop, beside a node limit.
+def test_the_search_stops_at_a_node_limit_and_the_clock_is_only_a_backstop(monkeypatch):
+    # Found comparing evidence runs: stopping on the wall clock made results vary with machine load,
+    # so a proposal could not be replayed. Every integer search must get the node limit, and the
+    # configured clock only beside it. The clock is held back from HiGHS so that a slow machine
+    # cannot change this test's outcome.
     seen = []
 
     def without_the_clock(real):
@@ -290,19 +290,12 @@ def test_answer_does_not_depend_on_how_much_time_the_machine_had(monkeypatch):
 
     monkeypatch.setattr(optimizer, "milp", recording_milp)
     monkeypatch.setattr(optimizer, "linprog", without_the_clock(real_linprog))
-    snapshot = flat_snapshot()
-    roomy = solve_hedge(_hard_option_problem(30.0), snapshot)
-    assert set(seen) == {30.0}
-    seen.clear()
-    tight = solve_hedge(_hard_option_problem(5.0), snapshot)
-    assert set(seen) == {5.0}
+    proposal = solve_hedge(_hard_option_problem(12.5), flat_snapshot())
+    assert proposal.legs
+    assert set(seen) == {12.5}
     assert node_limits
     assert set(node_limits) == {HedgeConfig().mip_node_limit}
-    assert not any("SOLVER_TIME_LIMIT" in issue for issue in roomy.issues)
-    assert not any("SOLVER_TIME_LIMIT" in issue for issue in tight.issues)
-    assert roomy.legs
-    assert roomy.quantities == tight.quantities
-    assert roomy.objective == tight.objective
+    assert not any("SOLVER_TIME_LIMIT" in issue for issue in proposal.issues)
 
 
 def test_hitting_the_wall_clock_backstop_is_reported(monkeypatch):

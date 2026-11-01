@@ -574,13 +574,20 @@ def test_an_expiry_past_either_end_of_time_is_a_422(tmp_path, path, expiry):
     assert "expiry must be from 1900 to 2300" in response.json()["error"]
 
 
-def test_a_short_american_call_on_a_far_market_date_is_a_422(tmp_path):
-    # The assignment window adds 7 days to as_of, which ran off the end of the calendar here.
-    call = {**example_book()[0]["instrument"], "style": "american", "strike": 50.0}
-    call["expiry"] = "9999-12-31T00:00:00+00:00"
-    market = {**example_market(), "as_of": "9999-12-30T15:00:00+00:00"}
+def test_the_date_window_leaves_room_for_the_assignment_window(tmp_path):
+    # expiry_risks adds 7 days to as_of, which ends past the window here, and its stated rule still
+    # applies: a short in-the-money American call, with a dividend above its time value before the
+    # ex-date, is flagged. Strike 50 on a spot of 100 has next to no time value against a 2.00 cash
+    # dividend. A window too narrow for that arithmetic would refuse this, or fail with a 500.
+    last = "2300-01-01T00:00:00+00:00"
+    call = {**example_book()[0]["instrument"], "style": "american", "strike": 50.0, "expiry": last}
+    market = example_market()
+    market["as_of"] = "2299-12-31T15:00:00+00:00"
+    market["underlyings"]["XYZ"]["dividends"] = [{"ex_date": last, "amount": 2.0}]
     payload = {"book": [{"instrument": call, "quantity": -1}], "market": market}
-    assert _client(tmp_path).post("/v1/value", headers=ALICE, json=payload).status_code == 422
+    response = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+    assert response.status_code == 200, response.text
+    assert [risk["kind"] for risk in response.json()["expiry_risks"]] == ["assignment"]
 
 
 @pytest.mark.parametrize("command", ["value", "ladder"])
@@ -609,26 +616,23 @@ def test_the_last_day_allowed_still_values_every_horizon(tmp_path):
     assert _client(tmp_path).post("/v1/decay", headers=ALICE, json=payload).status_code == 200
 
 
-# A quantity far past what a float can hold reaches arithmetic the parser does not do.
-ENORMOUS = 10**400
+def _enormous_lot_request():
+    # A lot size past what a float can hold reaches arithmetic the parser does not do.
+    request = example_request()
+    request["candidates"][1]["lot_size"] = 10**400
+    return request
 
 
 def test_arithmetic_out_of_range_on_inputs_is_a_422(tmp_path):
-    payload = {
-        "book": [{"instrument": STOCK, "quantity": ENORMOUS}],
-        "market": example_market(),
-    }
-    response = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_enormous_lot_request())
     assert response.status_code == 422
     assert "out of range" in response.json()["error"]
 
 
 def test_arithmetic_out_of_range_on_inputs_is_a_structured_cli_error(tmp_path, capfd):
-    book = tmp_path / "book.json"
-    book.write_text(json.dumps([{"instrument": STOCK, "quantity": ENORMOUS}]))
-    market = tmp_path / "market.json"
-    market.write_text(json.dumps(example_market()))
-    assert main(["value", "--book", str(book), "--market", str(market)]) == 1
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_enormous_lot_request()))
+    assert main(["hedge", "--request", str(path)]) == 1
     out = capfd.readouterr().out
     assert out.startswith("error:")
     assert "out of range" in out
@@ -818,3 +822,163 @@ def test_shares_alone_have_no_ladder(tmp_path, capfd):
     market.write_text(json.dumps(example_market()))
     assert main(["ladder", "--book", str(book), "--market", str(market)]) == 0
     assert "0 dated lines" in capfd.readouterr().out
+
+
+# --- Market inputs have plausibility bounds, as rates and vols do ---------------------------------
+
+
+def _stock_only_request(**market_fields):
+    request = example_request()
+    request["candidates"] = request["candidates"][:1]
+    request["targets"] = [{"underlying": "XYZ", "greek": "delta_dollars"}]
+    request["scenarios"] = []
+    request["run_stability"] = False
+    request["market"]["underlyings"]["XYZ"].update(market_fields)
+    return request
+
+
+def test_a_real_carry_yield_still_hedges(tmp_path):
+    # 2% a year: no dividend mistake, and a short strangle's delta is hedged by buying shares.
+    request = _stock_only_request(carry_yield=0.02)
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert [leg["side"] for leg in body["legs"]] == ["BUY"]
+
+
+@pytest.mark.parametrize("carry", [2.0, -2.0, -1e6, 1.0000001])
+@pytest.mark.parametrize("path", ["/v1/hedge", "/v1/frontier", "/v1/value", "/v1/stress"])
+def test_a_carry_yield_in_percent_is_refused(tmp_path, path, carry):
+    # 2.0 meant as 2% once flipped this hedge to selling shares, with verification passing.
+    request = _stock_only_request(carry_yield=carry)
+    if path in {"/v1/value", "/v1/stress"}:
+        request = {"book": request["book"], "market": request["market"]}
+    response = _client(tmp_path).post(path, headers=ALICE, json=request)
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert "carry_yield" in error
+    assert "rates are decimals" in error
+
+
+def test_the_cli_refuses_a_carry_yield_in_percent(tmp_path, capfd):
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_stock_only_request(carry_yield=2.0)))
+    assert main(["hedge", "--request", str(path)]) == 1
+    assert "rates are decimals" in capfd.readouterr().out
+
+
+def test_a_full_carry_yield_is_at_the_bound_and_allowed(tmp_path):
+    payload = _stock_only_request(carry_yield=1.0)
+    assert _client(tmp_path).post("/v1/hedge", headers=ALICE, json=payload).status_code == 200
+
+
+def test_an_implausible_spot_is_refused(tmp_path):
+    # This returned 200, with a book value of about -1e303 and no issue.
+    payload = {"book": example_book(), "market": example_market()}
+    payload["market"]["underlyings"]["XYZ"]["spot"] = 1e300
+    response = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "spot" in response.json()["error"]
+
+
+# --- A frontier stands wherever the hedge stands --------------------------------------------------
+
+
+def _request_with_a_candidate_off_the_market(**changes):
+    request = example_request()
+    off_market = {
+        "instrument": {"type": "linear", "symbol": "QQQ", "underlying": "QQQ"},
+        "quote": request["candidates"][0]["quote"],
+    }
+    request["candidates"].append(off_market)
+    request["run_stability"] = False
+    request.update(changes)
+    return request
+
+
+def test_a_candidate_with_no_market_is_excluded_from_hedge_and_frontier_alike(tmp_path):
+    request = _request_with_a_candidate_off_the_market()
+    client = _client(tmp_path)
+    hedge = client.post("/v1/hedge", headers=ALICE, json=request)
+    assert hedge.status_code == 200, hedge.text
+    assert [e["reason"] for e in hedge.json()["excluded"]] == ["no market data for its underlying"]
+    frontier = client.post("/v1/frontier", headers=ALICE, json=request)
+    assert frontier.status_code == 200, frontier.text
+    points = {point["label"]: point for point in frontier.json()["points"]}
+    # The stock on XYZ still makes a delta-only baseline, and only it is traded there.
+    assert points["delta only"]["n_legs"] == 1
+    assert points["delta only"]["unsolved_reason"] is None
+
+
+def test_no_delta_only_baseline_when_no_linear_candidate_has_a_market(tmp_path):
+    request = _request_with_a_candidate_off_the_market()
+    request["candidates"] = request["candidates"][1:]
+    response = _client(tmp_path).post("/v1/frontier", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    assert "delta only" not in [point["label"] for point in response.json()["points"]]
+
+
+def test_the_cli_frontier_takes_a_candidate_with_no_market(tmp_path, capfd):
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_request_with_a_candidate_off_the_market()))
+    assert main(["frontier", "--request", str(path)]) == 0
+    assert '"delta only"' in capfd.readouterr().out
+
+
+# --- Inputs too large for the solver are named, not reported as solver failures -------------------
+
+
+COST_INPUTS = {
+    "risk_aversion": lambda r: r["config"].update(risk_aversion=1e308),
+    "risk_aversion_past_what_highs_accepts": lambda r: r["config"].update(risk_aversion=1e20),
+    "cvar_weight": lambda r: r["config"].update(cvar_weight=1e300),
+    "ticket_cost": lambda r: r["config"].update(ticket_cost=1e300),
+    "target_weight": lambda r: r["targets"][0].update(weight=1e308),
+    "fee": lambda r: r["candidates"][1].update(fee_per_unit=1e300),
+    "impact": lambda r: r["candidates"][1].update(impact_per_unit=1e300),
+    "lot_size": lambda r: r["candidates"][1].update(lot_size=10**300),
+}
+
+
+@pytest.mark.parametrize("change", COST_INPUTS.values(), ids=COST_INPUTS)
+def test_a_cost_past_what_the_solver_can_use_is_a_422(tmp_path, capfd, change):
+    request = example_request()
+    change(request)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422
+    assert response.json()["type"] == "validation"
+    assert "objective cost" in response.json()["error"]
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+    assert main(["hedge", "--request", str(path)]) == 1
+    out = capfd.readouterr().out
+    assert out.startswith("error:")
+    assert "objective cost" in out
+
+
+@pytest.mark.parametrize("quantity", [10**20, -(10**20), 10**300, 10**400])
+@pytest.mark.parametrize("path", ["/v1/hedge", "/v1/value"])
+def test_a_book_quantity_past_the_limit_is_a_422(tmp_path, path, quantity):
+    request = example_request()
+    request["book"][0]["quantity"] = quantity
+    if path == "/v1/value":
+        request = {"book": request["book"], "market": request["market"]}
+    response = _client(tmp_path).post(path, headers=ALICE, json=request)
+    assert response.status_code == 422
+    assert "quantity must be at most" in response.json()["error"]
+
+
+def test_the_cli_names_a_book_quantity_past_the_limit(tmp_path, capfd):
+    request = example_request()
+    request["book"][0]["quantity"] = 10**300
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+    assert main(["hedge", "--request", str(path)]) == 1
+    assert "quantity must be at most" in capfd.readouterr().out
+
+
+def test_the_largest_quantity_allowed_still_hedges(tmp_path):
+    request = example_request()
+    request["book"] = request["book"][:1]
+    request["book"][0]["quantity"] = 10**9
+    request["run_stability"] = False
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text

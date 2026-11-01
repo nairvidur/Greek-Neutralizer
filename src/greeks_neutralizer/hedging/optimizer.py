@@ -254,6 +254,9 @@ def _economics(candidate: HedgeCandidate, exposure: Exposure, config: HedgeConfi
     )
 
 
+_MAX_SOLVER_COST = 1e15
+
+
 def _reached_clock(result: Any) -> bool:
     return bool(result.status == 1 and "time limit" in str(result.message).lower())
 
@@ -347,6 +350,12 @@ class _Program:
             c[self.i_v] = config.cvar_weight
             tail = config.cvar_weight / ((1.0 - config.cvar_alpha) * self.ns)
             c[self.i_u : self.i_u + self.ns] = tail
+        if not np.all(np.abs(c) <= _MAX_SOLVER_COST):
+            raise ValidationError(
+                f"an objective cost is past {_MAX_SOLVER_COST:g}, where the solver cannot be "
+                "relied on: check risk_aversion, cvar_weight, ticket_cost, target weights, and "
+                "candidate fees, impact, and lot sizes"
+            )
         return c
 
     def _variable_bounds(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:

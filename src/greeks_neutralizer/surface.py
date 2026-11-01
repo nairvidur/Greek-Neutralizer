@@ -215,6 +215,12 @@ _LOWER = np.array([-1.0, 1e-7, -0.999, -2.0, 1e-5])
 _UPPER = np.array([5.0, 5.0, 0.999, 2.0, 5.0])
 
 
+# SVI has a flat valley, so a good fit often uses up its evaluations still creeping along it, with
+# nothing left to gain. Near-zero first-order optimality is what separates that from a fit that
+# really did stop short.
+_CONVERGED_OPTIMALITY = 1e-3
+
+
 def fit_svi_slice(
     k: FloatArray,
     vol: FloatArray,
@@ -300,7 +306,7 @@ def fit_svi_slice(
         butterfly_min_g=float(np.min(slice_.durrleman_g(check_grid(slice_)))),
         k_min=float(np.min(k_)),
         k_max=float(np.max(k_)),
-        converged=bool(best.success),
+        converged=bool(best.success) or float(best.optimality) <= _CONVERGED_OPTIMALITY,
     )
 
 

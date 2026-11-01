@@ -206,6 +206,7 @@ def main() -> None:
         "as_of": as_of.isoformat(),
         "spot": spot,
         "book": [p.instrument.describe() + f" x {p.quantity}" for p in book],
+        "calibration_issues": list(calibration.issues),
         "n_candidates": len(candidates),
         "n_excluded": len(proposal.excluded),
         "status": proposal.status.value,

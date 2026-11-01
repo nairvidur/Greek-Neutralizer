@@ -69,6 +69,7 @@ A zero-width band, or one with a side left out, has no such ratio, so `utilizati
 
 A scenario, or a decay step, can look forward at most 36,525 days.
 Every date in a request must fall from 1900 to 2300.
+A `carry_yield` above 1.0 either way is refused, since rates are decimals, and so is a spot above 1e9, a position above 1e12 units, or an objective cost above 1e15.
 
 ## Listing proposals
 

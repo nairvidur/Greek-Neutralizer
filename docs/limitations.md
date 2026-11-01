@@ -60,4 +60,5 @@ FRTB sensitivity export is not implemented.
 - Replay is exact only without a `SOLVER_TIME_LIMIT` issue, and on the same library versions, which the manifest records, since HiGHS and SciPy updates can change results. Other architectures are unverified.
 - A search that reaches its limit with no hedge returns a `search_limit` error, with no answer about whether a hedge exists.
 - With `max_legs` or a ticket cost, the reported gap is against a weak bound and overstates the true shortfall.
+- Inputs past what is plausible are refused rather than valued. A carry yield is limited to 100% a year either way, as rates are, because 2.0 is far more often a mistyped 2% than a real rate, so a real stock borrow fee above 100% a year cannot be entered. Spot is limited to 1e9, a position to 1e12 units, and an objective cost to 1e15.
 - Budgets in `docs/evidence/performance/` are provisional targets. Few repeats were run, so `p99` there is not a real tail measurement.

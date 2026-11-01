@@ -281,7 +281,7 @@ def hedge_frontier(
             issues=book.issues,
         )
     ]
-    delta_only = _delta_only_problem(problem)
+    delta_only = _delta_only_problem(problem, snapshot)
     if delta_only is not None:
         points.append(
             _point(
@@ -310,9 +310,17 @@ def hedge_frontier(
     return tuple(points)
 
 
-def _delta_only_problem(problem: HedgeProblem) -> HedgeProblem | None:
-    """Same book and scenarios, but only linear hedges, with a very strong penalty on delta."""
-    linear = tuple(c for c in problem.candidates if isinstance(c.instrument, LinearInstrument))
+def _delta_only_problem(problem: HedgeProblem, snapshot: MarketSnapshot) -> HedgeProblem | None:
+    """Same book and scenarios, but only linear hedges, with a very strong penalty on delta.
+
+    A candidate with no market data cannot trade, as in the hedge itself, so it gets no target.
+    """
+    linear = tuple(
+        c
+        for c in problem.candidates
+        if isinstance(c.instrument, LinearInstrument)
+        and c.instrument.underlying in snapshot.underlyings
+    )
     if not linear:
         return None
     underlyings = sorted({c.instrument.underlying for c in linear})

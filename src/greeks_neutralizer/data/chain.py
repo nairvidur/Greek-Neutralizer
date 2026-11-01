@@ -152,6 +152,17 @@ class ChainCalibration:
     quoted_arbitrage: QuotedArbitrageReport
     n_unconverged_fits: int
 
+    @property
+    def issues(self) -> tuple[str, ...]:
+        """What whoever relies on this surface must know, in the form proposals report them."""
+        if not self.n_unconverged_fits:
+            return ()
+        return (
+            f"UNCONVERGED_FIT {self.n_unconverged_fits} of {len(self.fits)} expiries stopped "
+            "before the fit converged, so their part of the surface is the best found, not a "
+            "solution",
+        )
+
 
 def _deamericanize(
     prices: FloatArray,
