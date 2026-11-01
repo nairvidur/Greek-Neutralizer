@@ -1803,3 +1803,64 @@ def test_a_stock_has_no_proxy_mark_issue(tmp_path):
     payload = {"book": HUNDRED_SHARES, "market": example_market()}
     body = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload).json()
     assert body["issues"] == []
+
+
+def _hedge_of_ten_short_calls(candidates, **config):
+    def fair(right, strike):
+        omega = 1 if right == "call" else -1
+        price = black_greeks(100.0, strike, 30 / 365, 0.05, 0.0, 0.25, omega).price[0]
+        half = max(0.01 * price, 0.02)
+        return HedgeCandidate(
+            euro(right, strike, 30), Quote(price - half, price + half, 500, 500, AS_OF)
+        )
+
+    stock = HedgeCandidate(
+        LinearInstrument("XYZ", "XYZ"), Quote(99.99, 100.01, 100_000, 100_000, AS_OF)
+    )
+    available = {"stock": stock, "put": fair("put", 100.0), "call": fair("call", 105.0)}
+    targets = (
+        GreekTarget("XYZ", GreekName.DELTA, lower=-50.0, upper=50.0),
+        GreekTarget("XYZ", GreekName.GAMMA),
+        GreekTarget("XYZ", GreekName.VEGA, lower=-20.0, upper=20.0),
+    )
+    return HedgeProblem(
+        (Position(euro("call", 100.0, 30), -10),),
+        tuple(available[name] for name in candidates),
+        targets,
+        (),
+        HedgeConfig(**config),
+    )
+
+
+def test_a_leg_limit_that_decides_the_answer_is_named_in_the_error():
+    # Stock alone cannot move vega and one option alone misses the delta band, so one leg cannot
+    # do it. The same request at two legs solves, so the bands and whole lots are not the cause.
+    everything = ("stock", "put", "call")
+    with pytest.raises(HedgeInfeasibleError) as err:
+        solve_hedge(_hedge_of_ten_short_calls(everything, max_legs=1), flat_snapshot())
+    assert "max_legs" in str(err.value)
+    assert len(err.value.binding) == 1
+    assert "max_legs of 1" in err.value.binding[0]
+    assert "whole lots" in err.value.binding[0]
+
+    proposal = solve_hedge(_hedge_of_ten_short_calls(everything, max_legs=2), flat_snapshot())
+    assert len(proposal.legs) == 2
+    hedged = [Position(euro("call", 100.0, 30), -10)]
+    hedged += [Position(leg.instrument, leg.quantity) for leg in proposal.legs]
+    greeks = value_book(hedged, flat_snapshot()).by_underlying["XYZ"]
+    assert abs(greeks.delta_dollars) <= 50.0
+    assert abs(greeks.vega_1pt) <= 20.0
+
+
+def test_without_a_leg_limit_a_whole_lot_failure_does_not_mention_one():
+    # A share is worth $100 of delta, wider than this $2 band, and the book's delta is no multiple.
+    problem = replace(
+        _hedge_of_ten_short_calls(("stock",)),
+        targets=(GreekTarget("XYZ", GreekName.DELTA, lower=-1.0, upper=1.0),),
+    )
+    with pytest.raises(HedgeInfeasibleError) as err:
+        solve_hedge(problem, flat_snapshot())
+    assert "max_legs" not in str(err.value)
+    assert err.value.binding == (
+        "infeasible only under integer lots: widen a band by one contract's size",
+    )

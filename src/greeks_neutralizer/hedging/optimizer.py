@@ -905,11 +905,18 @@ class _Program:
                 gap = (objective - lower_bound) / max(abs(objective), 1.0)
                 return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
         if result.x is None and result.status == 2:
-            raise self._infeasible(
-                "the continuous hedge is feasible but no whole number of lots and shares is, at "
-                "full capacity: widen a band by about one unit's exposure",
-                dropped,
-            )
+            if config.max_legs is None:
+                message = (
+                    "the continuous hedge is feasible but no whole number of lots and shares is, "
+                    "at full capacity: widen a band by about one unit's exposure"
+                )
+            else:
+                message = (
+                    "the continuous hedge is feasible but no whole number of lots and shares is, "
+                    f"at full capacity and within max_legs={config.max_legs}: raise max_legs or "
+                    "widen a band by about one unit's exposure"
+                )
+            raise self._infeasible(message, dropped)
         raise SearchLimitError(
             f"the integer search stopped with no hedge, inside mip_node_limit="
             f"{config.mip_node_limit} and time_limit_seconds={config.time_limit_seconds:g}. "
@@ -1053,8 +1060,15 @@ class _Program:
             label.format(value) for label, value in zip(labels, slack, strict=True) if value > 1e-6
         )
         real = any(value > max(1e-6, reach) for value, reach in zip(slack, reaches, strict=True))
-        unbound = ("infeasible only under integer lots: widen a band by one contract's size",)
-        return found or unbound, real
+        if config.max_legs is None:
+            unbound = "infeasible only under integer lots: widen a band by one contract's size"
+        else:
+            unbound = (
+                "no band is short as a continuous problem: the limit is max_legs of "
+                f"{config.max_legs} or whole lots: raise max_legs or widen a band by one "
+                "unit's exposure"
+            )
+        return found or (unbound,), real
 
 
 def _problem_fingerprint(problem: HedgeProblem, run_stability: bool) -> str:

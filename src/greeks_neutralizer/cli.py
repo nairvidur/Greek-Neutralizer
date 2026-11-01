@@ -459,7 +459,10 @@ def _run(args: argparse.Namespace, fd: int, encode: Any) -> int:
                 {
                     "error": str(exc),
                     "binding": list(exc.binding),
-                    "help": "Widen the named bands, or add candidates that can move those Greeks",
+                    "help": (
+                        "Widen the named bands, raise max_legs if named, "
+                        "or add candidates that can move those Greeks"
+                    ),
                 }
             ),
         )
