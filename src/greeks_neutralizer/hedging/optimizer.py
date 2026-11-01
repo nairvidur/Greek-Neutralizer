@@ -58,6 +58,7 @@ from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.book import (
     Exposure,
     is_expired_instrument,
+    linear_unit_exposure,
     unit_exposures,
     value_book,
     value_options,
@@ -125,6 +126,8 @@ def _filter_candidates(
             continue
         live.append(candidate)
 
+    if compare_quotes_to_model:
+        live = _linear_quote_gate(live, excluded, snapshot, config)
     live = _model_gates(live, excluded, snapshot, config, compare_quotes_to_model)
 
     exposures = unit_exposures([c.instrument for c in live], snapshot) if live else ()
@@ -133,6 +136,37 @@ def _filter_candidates(
         for candidate, exposure in zip(live, exposures, strict=True)
     ]
     return usable, excluded
+
+
+def _linear_quote_gate(
+    live: list[HedgeCandidate],
+    excluded: list[ExcludedCandidate],
+    snapshot: MarketSnapshot,
+    config: HedgeConfig,
+) -> list[HedgeCandidate]:
+    """Compare each delta-one quote with what the market says it is worth.
+
+    Spot times the delta ratio, or the forward for a future. Options have the model to catch a wrong
+    spot, but a delta-only hedge has no other evidence, and its limit price reaches the ticket.
+    """
+    kept: list[HedgeCandidate] = []
+    for candidate in live:
+        instrument = candidate.instrument
+        if isinstance(instrument, LinearInstrument):
+            market = snapshot.market(instrument.underlying)
+            fair, _ = linear_unit_exposure(instrument, market, snapshot.as_of)
+            gap = abs(candidate.quote.mid / fair - 1.0)
+            if gap > config.max_linear_quote_gap:
+                excluded.append(
+                    ExcludedCandidate(
+                        instrument.describe(),
+                        f"unusable quote: mid {candidate.quote.mid:g} is {gap:.0%} from the "
+                        f"{fair:g} the market implies",
+                    )
+                )
+                continue
+        kept.append(candidate)
+    return kept
 
 
 def _model_gates(
@@ -255,6 +289,13 @@ def _economics(candidate: HedgeCandidate, exposure: Exposure, config: HedgeConfi
 
 
 _MAX_SOLVER_COST = 1e15
+# A row is scaled by the book, up to this many times its largest hedge. HiGHS drops a coefficient
+# under its small-matrix value, so an uncapped large book made every hedge on the row invisible.
+_MAX_BOOK_TO_HEDGE_SCALE = 1e4
+_HIGHS_SMALL_MATRIX_VALUE = 1e-9
+_HIGHS_INFINITY = 1e20
+# A dropped coefficient matters if the instrument at capacity could move its row by this much.
+_MATERIAL_ROW_MOVE = 1e-6
 
 
 def _reached_clock(result: Any) -> bool:
@@ -318,11 +359,11 @@ class _Program:
 
         Delta dollars per contract are around 1e6 next to unit coefficients on the absolute-value
         columns, which leaves the matrix badly conditioned and made HiGHS report numerical trouble.
+        The book counts only up to a limit, so that it cannot scale the hedges out of the solver.
         """
-        largest = abs(self.book_value(target))
-        for row in self.usable:
-            largest = max(largest, abs(self._exposure_column(target, row)))
-        return max(largest, 1.0)
+        hedge = max((abs(self._exposure_column(target, row)) for row in self.usable), default=0.0)
+        book = abs(self.book_value(target))
+        return max(max(hedge, min(book, hedge * _MAX_BOOK_TO_HEDGE_SCALE)), 1.0)
 
     def book_value(self, target: GreekTarget) -> float:
         exposure = self.book_by_underlying.get(target.underlying, Exposure())
@@ -445,6 +486,58 @@ class _Program:
             return [], []
         matrix = sparse.csr_array((vals, (rows, cols)), shape=(len(lo), self.size))
         return [LinearConstraint(matrix, np.array(lo), np.array(hi))], names
+
+    def _book_description(self) -> str:
+        book = self.problem.book
+        size = max((abs(p.quantity) for p in book), default=0)
+        multiplier = max((p.instrument.multiplier for p in book), default=0.0)
+        return (
+            f"a book of up to {size:g} units with a multiplier up to {multiplier:g}: check the "
+            "book size, spot, and multiplier, and any band or budget"
+        )
+
+    def _check_solver_range(self, constraints: list[LinearConstraint]) -> None:
+        """Refuse what HiGHS would silently change: a material coefficient it drops as zero, or a
+        right-hand side it reads as infinite, which can even give a false proof of infeasibility."""
+        for target in self.targets:
+            scale = self._row_scale(target)
+            for row in self.usable:
+                coefficient = abs(self._exposure_column(target, row)) / scale
+                capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
+                if (
+                    0.0 < coefficient < _HIGHS_SMALL_MATRIX_VALUE
+                    and coefficient * capacity >= _MATERIAL_ROW_MOVE
+                ):
+                    raise ValidationError(
+                        f"{row.candidate.instrument.describe()} is too small against the rest of "
+                        f"the {target.greek.value} row for the solver to see it, with "
+                        f"{self._book_description()}"
+                    )
+        for limit in constraints:
+            for side in (np.asarray(limit.lb), np.asarray(limit.ub)):
+                finite = np.abs(side[np.isfinite(side)])
+                if finite.size and float(finite.max()) >= _HIGHS_INFINITY:
+                    raise ValidationError(
+                        f"a limit or scenario loss of {float(finite.max()):g} is past what the "
+                        f"solver treats as finite, with {self._book_description()}"
+                    )
+
+    def _beats_the_lower_bound(self, solution: _Solution) -> str | None:
+        """A candidate at capacity that scores below the LP bound, which no feasible hedge can do.
+
+        Nothing else notices a solver that cannot see an instrument, since verification reprices
+        the lots it chose and the LP bound shares the same blind spot.
+        """
+        slack = 1e-6 * max(abs(solution.lower_bound), 1.0)
+        for i, row in enumerate(self.usable):
+            lot = row.candidate.lot_size
+            for quantity in (row.buy_total_cap * lot, -row.sell_total_cap * lot):
+                trial = solution.lots.copy()
+                trial[i] = quantity
+                if self.evaluate(trial) < solution.lower_bound - slack:
+                    name = row.candidate.instrument.describe()
+                    return f"{quantity} of {name} beats the lower bound the solver reported"
+        return None
 
     def _integrality(self, *, all_whole: bool = False) -> NDArray[np.int64]:
         """Integer lots, except fine-grained linear hedges, which are solved then rounded.
@@ -713,6 +806,7 @@ class _Program:
         config = self.problem.config
         costs = self._costs()
         constraints, _ = self._constraints()
+        self._check_solver_range(constraints)
         relaxed = self._relax(costs, constraints)
         if relaxed.status == 2:
             raise HedgeInfeasibleError(
@@ -1080,6 +1174,9 @@ def solve_hedge(
 
     program = _Program(problem, usable, dict(book.by_underlying), book_scenario, unit_scenario)
     solution = program.solve()
+    inadequate = program._beats_the_lower_bound(solution)
+    if inadequate is not None:
+        raise VerificationError(f"the solver missed a better hedge: {inadequate}")
 
     legs = tuple(
         _build_leg(row, int(quantity), problem)

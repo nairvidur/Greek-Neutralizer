@@ -12,7 +12,8 @@ Configuration, from the environment only:
   GN_MAX_MARKET_AGE_SECONDS  oldest market a proposal can be submitted on, default 900
   GN_GATE_MAX_QUOTE_AGE_SECONDS, GN_GATE_INSTABILITY_THRESHOLD, GN_GATE_REGRET_THRESHOLD,
   GN_GATE_MAX_MODEL_QUOTE_VOL_GAP, GN_GATE_MAX_LOTS_PER_LEG, GN_GATE_ALLOW_EXTRAPOLATED_VOL,
-  GN_GATE_REQUIRE_QUOTE_SIZE, GN_GATE_MIP_GAP, GN_GATE_TIME_LIMIT_SECONDS, GN_GATE_MIP_NODE_LIMIT
+  GN_GATE_MAX_LINEAR_QUOTE_GAP, GN_GATE_REQUIRE_QUOTE_SIZE, GN_GATE_MIP_GAP,
+  GN_GATE_TIME_LIMIT_SECONDS, GN_GATE_MIP_NODE_LIMIT
                  each gate's limit, default the library default. A request that omits a gate gets
                  this limit, and one that sets it looser gets a 422. GATE_SETTINGS and
                  gate_overrides then list only what a request set differently from these limits
@@ -117,6 +118,9 @@ def _gate_limits_from_env() -> HedgeConfig:
         regret_threshold=float(env.get("GN_GATE_REGRET_THRESHOLD", base.regret_threshold)),
         max_model_quote_vol_gap=float(
             env.get("GN_GATE_MAX_MODEL_QUOTE_VOL_GAP", base.max_model_quote_vol_gap)
+        ),
+        max_linear_quote_gap=float(
+            env.get("GN_GATE_MAX_LINEAR_QUOTE_GAP", base.max_linear_quote_gap)
         ),
         max_lots_per_leg=int(env.get("GN_GATE_MAX_LOTS_PER_LEG", base.max_lots_per_leg)),
         allow_extrapolated_vol=_env_flag(

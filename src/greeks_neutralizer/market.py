@@ -22,7 +22,7 @@ from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.time_model import CALENDAR_CLOCK, VarianceClock, calendar_years
 
 _MAX_PLAUSIBLE_RATE = 1.0
-_MAX_PLAUSIBLE_SPOT = 1e9
+MAX_PLAUSIBLE_SPOT = 1e9
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +128,9 @@ class UnderlyingMarket:
 
     def __post_init__(self) -> None:
         require_finite_positive("spot", self.spot)
-        if self.spot > _MAX_PLAUSIBLE_SPOT:
+        if self.spot > MAX_PLAUSIBLE_SPOT:
             raise ValidationError(
-                f"spot {self.spot} is implausible: it must be at most {_MAX_PLAUSIBLE_SPOT:g}"
+                f"spot {self.spot} is implausible: it must be at most {MAX_PLAUSIBLE_SPOT:g}"
             )
         require_finite("carry_yield", self.carry_yield)
         if abs(self.carry_yield) > _MAX_PLAUSIBLE_RATE:

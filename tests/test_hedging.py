@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 from datetime import timedelta
 
@@ -20,7 +21,7 @@ from greeks_neutralizer.domain import (
     Position,
     Quote,
 )
-from greeks_neutralizer.errors import HedgeInfeasibleError, ValidationError
+from greeks_neutralizer.errors import HedgeInfeasibleError, SearchLimitError, ValidationError
 from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import (
     hedge_decay_forecast,
@@ -95,9 +96,14 @@ def test_high_risk_aversion_reduces_all_greeks_within_one_contract():
     for line in proposal.residuals:
         assert abs(line.after) < abs(line.before)
     after = proposal.after["XYZ"]
-    # Within what one integer contract of the smallest hedge can resolve.
-    assert abs(after.delta_shares) < 100.0
-    assert abs(after.vega_1pt) < 15.0
+    # Shares trade singly, so one share is what is left of delta. Vega moves only by whole
+    # contracts, so it is within the smallest vega on offer, valued on its own here.
+    assert abs(after.delta_shares) < 1.0
+    smallest_vega = min(
+        value_book([Position(c.instrument, 1)], flat_snapshot()).by_underlying["XYZ"].vega_1pt
+        for c in CANDIDATES[1:]
+    )
+    assert abs(after.vega_1pt) < smallest_vega
 
 
 def test_quantities_are_integer_lots():
@@ -296,6 +302,27 @@ def test_the_search_stops_at_a_node_limit_and_the_clock_is_only_a_backstop(monke
     assert node_limits
     assert set(node_limits) == {HedgeConfig().mip_node_limit}
     assert not any("SOLVER_TIME_LIMIT" in issue for issue in proposal.issues)
+
+
+def test_a_real_search_stops_at_its_node_limit(monkeypatch):
+    # HiGHS itself: this search explores past one node when allowed, and stops there when told to.
+    counts = []
+
+    def recording(*args, **kwargs):
+        result = real_milp(*args, **kwargs)
+        counts.append(int(result.mip_node_count))
+        return result
+
+    monkeypatch.setattr(optimizer, "milp", recording)
+    problem = _hard_option_problem(30.0)
+    solve_hedge(problem, flat_snapshot())
+    assert max(counts) > 1
+    counts.clear()
+    limited = replace(problem.config, mip_node_limit=1)
+    with contextlib.suppress(SearchLimitError):
+        solve_hedge(replace(problem, config=limited), flat_snapshot())
+    assert counts
+    assert max(counts) <= 1
 
 
 def test_hitting_the_wall_clock_backstop_is_reported(monkeypatch):

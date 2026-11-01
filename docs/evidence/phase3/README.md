@@ -25,6 +25,7 @@ uv run python scripts/hedge_real_chain.py vendor_data/_SPX.json --rate 0.0482
 
 `hedge_SPX.json` carries a `GATE_SETTINGS` issue because this script allows a 30-day quote age, so that a saved chain can be replayed.
 A live service refuses that setting by default.
+The file predates the script's `calibration_issues` field and the current wording of that issue, and takes both when next regenerated from a vendor chain.
 
 QuantLib is a separate implementation, so the agreement checks arithmetic independently.
 It uses the same vols and rates, so it cannot detect a wrong input or assumption.

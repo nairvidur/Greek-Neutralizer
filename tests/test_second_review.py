@@ -12,7 +12,7 @@ import io
 import json
 import math
 import threading
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from numpy.testing import assert_allclose
 
+from greeks_neutralizer import workflow
 from greeks_neutralizer.cli import main
 from greeks_neutralizer.domain import (
     LinearInstrument,
@@ -437,41 +438,48 @@ def _seed(path: Path, records: int = 1) -> AuditLog:
     return log
 
 
-def test_verification_beside_appends_never_raises_a_false_alarm(tmp_path):
+def test_verification_beside_appends_never_raises_a_false_alarm(tmp_path, monkeypatch):
+    # The verify starts in the one moment the log is ahead of its sidecar, between the two writes
+    # of an append. With the lock it blocks until they agree. Without the lock it reads that moment
+    # and reports a broken chain. The append holds there until one or the other has happened.
     log = _seed(tmp_path / "a.jsonl")
-    failures: list[object] = []
-    done = threading.Event()
-    checks = [threading.Event(), threading.Event()]
-    verified = [0]
+    between_the_writes = threading.Event()
+    verify_blocked_or_done = threading.Event()
+    real_write = workflow._write_sidecar
 
-    def verify() -> None:
-        while not done.is_set():
-            try:
-                check = log.verify()
-            except Exception as exc:
-                failures.append(exc)
-                break
-            if not check.ok:
-                failures.append(check)
-                break
-            verified[0] += 1
-            if verified[0] <= len(checks):
-                checks[verified[0] - 1].set()
-        for event in checks:
-            event.set()
+    class WatchedLock:
+        def __init__(self, lock):
+            self.lock = lock
 
-    worker = threading.Thread(target=verify)
-    worker.start()
-    assert checks[0].wait(30.0)
-    before = verified[0]
-    for n in range(100):
-        log.append("event", "alice", {"n": n}, DEFAULT_AS_OF)
-    assert checks[1].wait(30.0)
-    done.set()
-    worker.join()
-    assert failures == []
-    assert before >= 1
-    assert verified[0] >= 2
+        def __enter__(self):
+            if not self.lock.acquire(blocking=False):
+                verify_blocked_or_done.set()
+                self.lock.acquire()
+
+        def __exit__(self, *exc):
+            self.lock.release()
+
+    def write(*args):
+        between_the_writes.set()
+        assert verify_blocked_or_done.wait(30.0)
+        real_write(*args)
+
+    log._lock = WatchedLock(log._lock)
+    monkeypatch.setattr(workflow, "_write_sidecar", write)
+    results = []
+
+    def verify():
+        assert between_the_writes.wait(30.0)
+        results.append(log.verify())
+        verify_blocked_or_done.set()
+
+    verifier = threading.Thread(target=verify)
+    verifier.start()
+    log.append("event", "alice", {"n": 1}, DEFAULT_AS_OF)
+    verifier.join(timeout=30.0)
+    assert not verifier.is_alive()
+    assert [check.ok for check in results] == [True]
+    assert results[0].records == 2
 
 
 def test_crash_before_the_head_is_replaced_keeps_it_readable_and_is_named(tmp_path, monkeypatch):
@@ -810,9 +818,11 @@ def test_grid_refuses_a_scenario_set_it_would_ignore(client):
 
 
 def test_policy_has_no_switch_for_four_eyes_or_the_unstable_block():
-    for name in ("require_second_approver", "allow_unstable"):
-        with pytest.raises(TypeError):
-            WorkflowPolicy(**{name: False})
+    # By what it has, so that a bypass under any new name fails here too. Only these two timings.
+    assert {field.name for field in fields(WorkflowPolicy)} == {
+        "approval_valid_for",
+        "max_market_age",
+    }
 
 
 def test_status_survives_serialization():

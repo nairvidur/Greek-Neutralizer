@@ -158,31 +158,53 @@ def test_calibration_recovers_smile_from_quotes():
     assert_allclose(vols, 0.2 - 0.1 * k + 0.3 * k * k, atol=0.002)
 
 
-def _unconverged_least_squares(monkeypatch):
-    # The optimizer stops at its evaluation limit, far from any optimum: success False from SciPy,
-    # with a large gradient left. The fit itself stays good, so that no quality gate intervenes.
-    def stopped(*args, **kwargs):
+def _scipy_reports(monkeypatch, *, success):
+    # Set at the SciPy boundary: the fit itself stays good, so that no quality gate intervenes.
+    def reported(*args, **kwargs):
         result = real_least_squares(*args, **kwargs)
-        result.success = False
-        result.optimality = 1.0
+        result.success = success
         return result
 
-    monkeypatch.setattr(surface_module, "least_squares", stopped)
+    monkeypatch.setattr(surface_module, "least_squares", reported)
 
 
-def test_a_fit_stopped_early_for_real_is_not_converged(monkeypatch):
-    # No patched result here: two evaluations cannot reach the optimum of this smile.
-    def two_evaluations(*args, **kwargs):
-        return real_least_squares(*args, **{**kwargs, "max_nfev": 2})
+def _unconverged_least_squares(monkeypatch):
+    _scipy_reports(monkeypatch, success=False)
 
+
+@pytest.mark.parametrize("success", [True, False])
+def test_converged_is_scipys_own_status_whatever_the_gradient(monkeypatch, success):
+    def reported(*args, **kwargs):
+        result = real_least_squares(*args, **kwargs)
+        result.success = success
+        # Near zero and large: a threshold on this in either direction would change the answer.
+        result.optimality = 1e-12 if not success else 1.0
+        return result
+
+    monkeypatch.setattr(surface_module, "least_squares", reported)
+    k = np.linspace(-0.2, 0.2, 21)
+    assert fit_svi_slice(k, 0.2 - 0.1 * k + 0.3 * k * k, 0.25).converged is success
+
+
+def test_a_fit_given_room_converges_and_one_stopped_early_does_not(monkeypatch):
+    # No patched result: SciPy's own status, with evaluations to spare and with two.
     k = np.linspace(-0.2, 0.2, 21)
     vols = 0.2 - 0.1 * k + 0.3 * k * k
+
+    def with_evaluations(limit):
+        def solver(*args, **kwargs):
+            return real_least_squares(*args, **{**kwargs, "max_nfev": limit})
+
+        return solver
+
+    monkeypatch.setattr(surface_module, "least_squares", with_evaluations(20_000))
     assert fit_svi_slice(k, vols, 0.25).converged
-    monkeypatch.setattr(surface_module, "least_squares", two_evaluations)
+    monkeypatch.setattr(surface_module, "least_squares", with_evaluations(2))
     assert not fit_svi_slice(k, vols, 0.25).converged
 
 
-def test_a_clean_calibration_has_no_issue():
+def test_a_converged_calibration_has_no_issue(monkeypatch):
+    _scipy_reports(monkeypatch, success=True)
     calibration = calibrate_chain(_chain(D=np.exp(-0.04 * 0.25)), NOW, 100.0, discount_rate=0.04)
     assert calibration.n_unconverged_fits == 0
     assert calibration.issues == ()
@@ -208,6 +230,7 @@ def test_the_reconciliation_output_reports_a_fit_that_did_not_converge(monkeypat
     payload = tmp_path / "payload.json"
     payload.write_text("{}")
 
+    _scipy_reports(monkeypatch, success=True)
     clean = reconcile_chain.reconcile(payload, 0.04)
     assert clean["fits_unconverged"] == 0
     assert clean["issues"] == []

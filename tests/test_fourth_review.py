@@ -107,17 +107,31 @@ def test_a_band_tighter_than_a_share_finds_the_hedge_that_exists(quantity):
 
 
 @pytest.mark.parametrize("quantity", range(1, 11))
-def test_stability_does_not_call_such_a_band_fragile(quantity):
+def test_stability_does_not_call_such_a_band_fragile(monkeypatch, quantity):
+    # What calling it fragile rests on, whatever the note says: a re-solve claiming infeasibility.
+    real_solve = optimizer._Program.solve
+    claims = []
+
+    def solve(program):
+        try:
+            return real_solve(program)
+        except HedgeInfeasibleError as exc:
+            claims.append(exc)
+            raise
+
+    monkeypatch.setattr(optimizer._Program, "solve", solve)
     proposal = solve_hedge(_share_too_coarse_for_the_band(quantity), HIGH_PRICE, run_stability=True)
     assert proposal.stability is not None
-    assert not any("fragile" in note for note in proposal.stability.notes)
+    assert claims == []
 
 
 @pytest.mark.parametrize("quantity", range(1, 11))
 def test_frontier_does_not_call_such_a_band_infeasible(quantity):
     problem = _share_too_coarse_for_the_band(quantity)
     point = hedge_frontier(problem, HIGH_PRICE, risk_aversions=(1.0,))[-1]
-    assert point.status != "infeasible"
+    assert point.unsolved_reason is None
+    assert point.proposal is not None
+    assert point.status not in {"infeasible", "search_limit"}
 
 
 def _script_milp(monkeypatch, script):
@@ -212,6 +226,7 @@ LOOSER = {
     "regret_threshold": 0.9,
     "max_model_quote_vol_gap": 0.5,
     "max_lots_per_leg": 5001,
+    "max_linear_quote_gap": 0.26,
     "allow_extrapolated_vol": True,
     "require_quote_size": False,
     "mip_gap": 0.99,
@@ -224,6 +239,7 @@ TIGHTER = {
     "regret_threshold": 0.05,
     "max_model_quote_vol_gap": 0.04,
     "max_lots_per_leg": 4000,
+    "max_linear_quote_gap": 0.2,
     "mip_gap": 0.001,
     "time_limit_seconds": 10.0,
     "mip_node_limit": 200,

@@ -344,6 +344,7 @@ def _parse_config(data: Any, gate_defaults: HedgeConfig) -> HedgeConfig:
         "regret_threshold",
         "max_lots_per_leg",
         "max_model_quote_vol_gap",
+        "max_linear_quote_gap",
     }
     check_fields(d, "config", set(), allowed)
     if "max_quote_age_seconds" in d:

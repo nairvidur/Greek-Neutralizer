@@ -147,6 +147,7 @@ class HedgeConfig:
     regret_threshold: float = 0.1
     max_lots_per_leg: int = 5000
     max_model_quote_vol_gap: float = 0.05
+    max_linear_quote_gap: float = 0.25
 
     def __post_init__(self) -> None:
         for name in (
@@ -159,6 +160,7 @@ class HedgeConfig:
             "instability_threshold",
             "regret_threshold",
             "max_model_quote_vol_gap",
+            "max_linear_quote_gap",
         ):
             require_finite(name, getattr(self, name))
         if self.premium_budget is not None:
@@ -187,6 +189,8 @@ class HedgeConfig:
         require_int("max_lots_per_leg", self.max_lots_per_leg)
         if self.max_lots_per_leg < 1:
             raise ValidationError("max_lots_per_leg must be at least 1")
+        if self.max_linear_quote_gap < 0.0:
+            raise ValidationError("max_linear_quote_gap must be non-negative")
         if not 0.0 < self.mip_gap < 1.0:
             raise ValidationError("mip_gap must be in (0, 1)")
 
@@ -200,6 +204,7 @@ _GATES: tuple[tuple[str, str, bool], ...] = (
     ("instability_threshold", "instability_threshold", True),
     ("regret_threshold", "regret_threshold", True),
     ("max_model_quote_vol_gap", "max_model_quote_vol_gap", True),
+    ("max_linear_quote_gap", "max_linear_quote_gap", True),
     ("max_lots_per_leg", "max_lots_per_leg", True),
     ("allow_extrapolated_vol", "allow_extrapolated_vol", True),
     ("require_quote_size", "require_quote_size", False),

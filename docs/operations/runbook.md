@@ -28,7 +28,7 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | Proposal status `no_usable_candidates` | Every candidate was excluded | **It does not mean no hedge is needed.** Fix the feed, then re-propose |
 | Proposal status `partial_coverage` | A targeted underlying has no candidate that can trade, and is unhedged | **Read the `NO_USABLE_CANDIDATES` issue.** Its residual stays as it was, so fix the feed or add candidates, then re-propose |
 | 422 `market_data`, "model and quotes disagree" | Most quotes are far from the model | Check vol units, rates, and spot before anything else |
-| HTTP 500 `verification_failed` | A solution failed independent repricing | **Do not trade.** Save the request and report it as a bug: this should never happen |
+| HTTP 500 `verification_failed` | A solution failed independent repricing, or a candidate at capacity beat the solver's own lower bound | **Do not trade.** Save the request and report it as a bug: this should never happen |
 | Proposal status `unstable` | A small input change moves the trade and costs benefit | Review the notes, and widen the candidates or tighten the universe |
 | Proposal status `within_gap` | Integer lots cost more than the configured gap | Read the `INTEGRALITY_GAP` issue. Usually fine at the stated size, and a weak bound with `max_legs` |
 | 422 `infeasible` | The solver proved, over whole lots and shares at full capacity, that no hedge meets the bands | Read `binding`, then widen those bands or add candidates |
@@ -40,6 +40,8 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | `EXPIRED` in issues | A book contains an expired option | Settle or remove it |
 | `EXTRAPOLATED_VOL` in issues | A strike is beyond the quotes | Treat its value and Greeks as unverified |
 | Many `excluded` candidates | Quotes are stale, crossed, or empty | Check the feed before trusting the result |
+| `excluded` reason "the market implies" | A delta-one quote is more than `max_linear_quote_gap` from spot times its ratio, or from the forward | Check spot, the symbol, and the quote's units. Do not raise `GN_GATE_MAX_LINEAR_QUOTE_GAP` to get a trade through |
+| `UNCONVERGED_FIT` in a chain script's issues | An expiry's fit reached its evaluation limit, as SciPy reports it | Read that expiry's fit errors before relying on its part of the surface |
 
 ## Gate limits
 
@@ -70,6 +72,8 @@ A zero-width band, or one with a side left out, has no such ratio, so `utilizati
 A scenario, or a decay step, can look forward at most 36,525 days.
 Every date in a request must fall from 1900 to 2300.
 A `carry_yield` above 1.0 either way is refused, since rates are decimals, and so is a spot above 1e9, a position above 1e12 units, or an objective cost above 1e15.
+A scenario that would take spot past 1e9 is refused too, by name.
+A hedge request is also refused when a scenario loss, band, or budget reaches 1e20, which the solver reads as infinite, or when an instrument at capacity would matter but is too small for it to see.
 
 ## Listing proposals
 

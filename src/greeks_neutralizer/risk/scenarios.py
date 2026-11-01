@@ -27,7 +27,12 @@ from greeks_neutralizer.domain import (
     require_finite,
 )
 from greeks_neutralizer.errors import MarketDataError, ValidationError
-from greeks_neutralizer.market import MarketSnapshot, UnderlyingMarket, VolSurface
+from greeks_neutralizer.market import (
+    MAX_PLAUSIBLE_SPOT,
+    MarketSnapshot,
+    UnderlyingMarket,
+    VolSurface,
+)
 from greeks_neutralizer.pricing.american import (
     AmericanBatch,
     american_price,
@@ -149,6 +154,11 @@ def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) 
     if spot <= 0.0:
         raise MarketDataError(
             f"{market.symbol}: dividends going ex by {horizon} exceed spot under {scenario.name}"
+        )
+    if spot > MAX_PLAUSIBLE_SPOT:
+        raise MarketDataError(
+            f"{market.symbol}: spot {market.spot:g} reaches {spot:g} under {scenario.name}, past "
+            f"the limit of {MAX_PLAUSIBLE_SPOT:g}"
         )
     # The surface reads time from the horizon, by when any dividend inside it has gone ex.
     dividends = tuple(

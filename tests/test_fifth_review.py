@@ -30,8 +30,9 @@ from greeks_neutralizer.examples import (
     example_market,
     example_request,
 )
+from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast
-from greeks_neutralizer.hedging.optimizer import solve_hedge
+from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
 from greeks_neutralizer.risk.measures import RiskLimit, expiry_ladder, liquidity_adjusted_cost
 from greeks_neutralizer.schema import parse_hedge_request
 from greeks_neutralizer.service.app import create_app
@@ -669,8 +670,12 @@ def test_every_frontier_point_names_an_expired_option(tmp_path, target):
     assert "delta only" not in [point["label"] for point in points]
     for point in points:
         assert any(issue.startswith("EXPIRED") for issue in point["issues"]), point["label"]
+    solves = points[1:]
     if target:
-        assert all(p["status"] == "infeasible" for p in points[1:])
+        assert all(p["status"] == "infeasible" for p in solves)
+        assert all(p["unsolved_reason"] for p in solves)
+    else:
+        assert all(p["status"] != "infeasible" and p["unsolved_reason"] is None for p in solves)
 
 
 def test_the_cli_frontier_prints_the_issues_themselves(tmp_path, capfd):
@@ -870,13 +875,33 @@ def test_a_full_carry_yield_is_at_the_bound_and_allowed(tmp_path):
     assert _client(tmp_path).post("/v1/hedge", headers=ALICE, json=payload).status_code == 200
 
 
-def test_an_implausible_spot_is_refused(tmp_path):
-    # This returned 200, with a book value of about -1e303 and no issue.
-    payload = {"book": example_book(), "market": example_market()}
-    payload["market"]["underlyings"]["XYZ"]["spot"] = 1e300
-    response = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+def _value_at_spot(tmp_path, spot):
+    # A strike at spot, so that the only thing out of the ordinary is the size of the numbers.
+    option = {**example_book()[0]["instrument"], "strike": spot}
+    market = example_market()
+    market["underlyings"]["XYZ"]["spot"] = spot
+    payload = {"book": [{"instrument": option, "quantity": 1}], "market": market}
+    return _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+
+
+def test_spot_is_limited_at_the_documented_1e9(tmp_path):
+    assert _value_at_spot(tmp_path, 1e9).status_code == 200
+    # This returned 200 at 1e300, with a book value of about -1e303 and no issue.
+    for spot in (1.0000001e9, 1e10, 1e300):
+        response = _value_at_spot(tmp_path, spot)
+        assert response.status_code == 422
+        assert "spot" in response.json()["error"]
+
+
+def test_a_scenario_taking_spot_past_the_limit_says_which_and_what_was_entered(tmp_path):
+    payload = {"book": HUNDRED_SHARES, "market": example_market()}
+    payload["market"]["underlyings"]["XYZ"]["spot"] = 1e9
+    # The set's own stresses include a melt-up, which goes past the limit from exactly 1e9.
+    response = _client(tmp_path).post("/v1/stress", headers=ALICE, json=payload)
     assert response.status_code == 422
-    assert "spot" in response.json()["error"]
+    error = response.json()["error"]
+    assert "spot 1e+09 reaches" in error
+    assert "under" in error
 
 
 # --- A frontier stands wherever the hedge stands --------------------------------------------------
@@ -975,10 +1000,234 @@ def test_the_cli_names_a_book_quantity_past_the_limit(tmp_path, capfd):
     assert "quantity must be at most" in capfd.readouterr().out
 
 
-def test_the_largest_quantity_allowed_still_hedges(tmp_path):
+def _big_book_request(quantity, *, stock_only=False):
     request = example_request()
-    request["book"] = request["book"][:1]
-    request["book"][0]["quantity"] = 10**9
+    request["book"] = [{**request["book"][0], "quantity": quantity}]
     request["run_stability"] = False
+    request["scenarios"] = []
+    request["config"] = {"risk_aversion": 1.0}
+    if stock_only:
+        request["candidates"] = request["candidates"][:1]
+        request["targets"] = request["targets"][:1]
+    return request
+
+
+@pytest.mark.parametrize("quantity", [2 * 10**7, 10**8, 10**10, 10**12])
+def test_a_large_book_gets_a_hedge_at_capacity_not_one_too_small(tmp_path, quantity):
+    # Long calls with far more delta than the market can offset. Oracle: every hedge that helps
+    # sells all it can, 100,000 shares and each option's displayed 500. It was once 30, optimal.
+    response = _client(tmp_path).post(
+        "/v1/hedge", headers=ALICE, json=_big_book_request(quantity, stock_only=True)
+    )
+    assert response.status_code == 200, response.text
+    assert [leg["quantity"] for leg in response.json()["legs"]] == [-100_000]
+    full = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_big_book_request(quantity))
+    assert full.status_code == 200, full.text
+    legs = sorted(leg["quantity"] for leg in full.json()["legs"])
+    assert legs == [-100_000, -500, -500, -500, -500, -500]
+
+
+def test_the_position_limit_is_exactly_the_documented_1e12(tmp_path):
+    client = _client(tmp_path)
+    accepted = client.post(
+        "/v1/hedge", headers=ALICE, json=_big_book_request(10**12, stock_only=True)
+    )
+    assert accepted.status_code == 200
+    assert [leg["quantity"] for leg in accepted.json()["legs"]] == [-100_000]
+    for quantity in (10**12 + 1, -(10**12) - 1):
+        refused = client.post(
+            "/v1/hedge", headers=ALICE, json=_big_book_request(quantity, stock_only=True)
+        )
+        assert refused.status_code == 422
+        assert "quantity must be at most" in refused.json()["error"]
+
+
+def _cvar_only_request(quantity, spot):
+    request = _big_book_request(quantity, stock_only=True)
+    request["book"][0]["instrument"] = {**request["book"][0]["instrument"], "strike": spot}
+    request["market"]["underlyings"]["XYZ"]["spot"] = spot
+    quote = request["candidates"][0]["quote"]
+    quote.update(bid=spot * 0.9999, ask=spot * 1.0001)
+    request["targets"] = []
+    request["scenarios"] = [{"name": "down", "spot_shock": -0.2, "vol_shock": 0.3}]
+    request["config"] = {"cvar_weight": 1.0}
+    return request
+
+
+def test_cvar_at_a_size_the_solver_can_read_is_solved(tmp_path):
+    request = _cvar_only_request(10**12, 1e7)
     response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
     assert response.status_code == 200, response.text
+    assert [leg["quantity"] for leg in response.json()["legs"]] == [-100_000]
+
+
+def test_cvar_past_what_the_solver_can_read_is_not_called_infeasible(tmp_path):
+    # A scenario loss of about 2.5e20 reads as infinite to HiGHS, and gave a false proof of
+    # infeasibility telling the user to check candidate capacity.
+    request = _cvar_only_request(10**12, 1e8)
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["type"] == "validation"
+    assert "treats as finite" in body["error"]
+    assert "book size, spot, and multiplier" in body["error"]
+
+
+def test_an_instrument_too_small_for_the_solver_to_see_is_refused_by_name(tmp_path):
+    # Stock at $100 of delta a share, beside a future of about 1e8 a contract, with a book far past
+    # both, puts the stock near 1e-10 on the row, and at 100,000 shares it could still move it.
+    request = _big_book_request(10**12, stock_only=True)
+    expiry = (DEFAULT_AS_OF + timedelta(days=30)).isoformat()
+    future = {
+        "type": "linear",
+        "symbol": "XYF",
+        "underlying": "XYZ",
+        "kind": "future",
+        "multiplier": 1e6,
+        "expiry": expiry,
+    }
+    quote = {**request["candidates"][0]["quote"], "bid": 100.4, "ask": 100.42}
+    request["candidates"].append({"instrument": future, "quote": quote})
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert "too small" in error
+    assert "book size, spot, and multiplier" in error
+    # The same two instruments against an ordinary book are not refused.
+    request["book"][0]["quantity"] = 10
+    assert _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).status_code == 200
+
+
+def test_a_solver_blind_to_an_instrument_cannot_read_as_verified(monkeypatch):
+    # The old scale, which hid every hedge from HiGHS, stands in for any such blind spot. Selling
+    # the stock's capacity then beats the bound the solver reports, which no feasible hedge can do.
+    problem, snapshot, _ = parse_hedge_request(_big_book_request(10**8, stock_only=True))
+    monkeypatch.setattr(optimizer._Program, "_row_scale", lambda self, target: 1e11)
+    with pytest.raises(VerificationError, match="missed a better hedge"):
+        solve_hedge(problem, snapshot)
+
+
+def test_an_ordinary_hedge_is_not_called_inadequate():
+    problem, snapshot, _ = parse_hedge_request(example_request())
+    assert solve_hedge(problem, snapshot, run_stability=True).legs
+
+
+COST_LIMIT_REQUEST = {"max_legs": 5}
+
+
+@pytest.mark.parametrize(
+    ("ticket_cost", "accepted"),
+    [(1e15, True), (1.0000001e15, False)],
+    ids=["at-the-limit", "just-past-it"],
+)
+def test_the_cost_limit_is_exactly_the_documented_1e15(tmp_path, ticket_cost, accepted):
+    request = example_request()
+    request["run_stability"] = False
+    request["config"] = {**COST_LIMIT_REQUEST, "ticket_cost": ticket_cost}
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == (200 if accepted else 422), response.text
+
+
+# --- A delta-one quote must agree with the market -------------------------------------------------
+
+
+def _stock_quoted_at(mid, *, options=False, **config):
+    request = example_request()
+    if not options:
+        request["candidates"] = request["candidates"][:1]
+        request["targets"] = request["targets"][:1]
+    request["candidates"][0]["quote"].update(bid=mid - 0.01, ask=mid + 0.01)
+    request["run_stability"] = False
+    request["scenarios"] = []
+    request["config"] = {"risk_aversion": 1.0, **config}
+    return request
+
+
+@pytest.mark.parametrize("mid", [200.0, 10.0, 126.0, 74.0])
+def test_a_stock_quote_far_from_spot_is_excluded_with_its_reason(tmp_path, mid):
+    # This hedged 328 shares at any of these prices, with the limit reaching the ticket.
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_stock_quoted_at(mid))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "no_usable_candidates"
+    assert body["legs"] == []
+    assert len(body["excluded"]) == 1
+    assert "the market implies" in body["excluded"][0]["reason"]
+
+
+@pytest.mark.parametrize("mid", [100.05, 99.95, 124.0, 76.0])
+def test_a_stock_quote_near_spot_is_used(tmp_path, mid):
+    response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_stock_quoted_at(mid))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["excluded"] == []
+    assert [leg["side"] for leg in body["legs"]] == ["BUY"]
+
+
+def test_options_still_hedge_when_only_the_stock_is_excluded(tmp_path):
+    request = _stock_quoted_at(200.0, options=True)
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert [e["instrument"] for e in body["excluded"]] == ["XYZ (spot)"]
+    assert body["legs"]
+    assert all(leg["instrument"]["type"] == "option" for leg in body["legs"])
+
+
+@pytest.mark.parametrize(
+    ("mid", "usable"),
+    # Forward by hand: 100 * exp(0.05 * 90/365) = 101.24, so 200 is far and 101.2 is near. A check
+    # against spot alone could not tell a future at 101.2 from one at 100.
+    [(101.2, True), (200.0, False), (10.0, False)],
+)
+def test_a_future_is_compared_with_the_forward(tmp_path, mid, usable):
+    request = _stock_quoted_at(100.0)
+    request["candidates"][0]["instrument"] = {
+        "type": "linear",
+        "symbol": "XYF",
+        "underlying": "XYZ",
+        "kind": "future",
+        "multiplier": 50.0,
+        "expiry": (DEFAULT_AS_OF + timedelta(days=90)).isoformat(),
+    }
+    request["candidates"][0]["quote"].update(bid=mid - 0.01, ask=mid + 0.01)
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert bool(body["legs"]) is usable
+    assert len(body["excluded"]) == (0 if usable else 1)
+
+
+def test_a_proxy_is_compared_with_spot_times_its_ratio(tmp_path):
+    request = _stock_quoted_at(10.0)
+    request["candidates"][0]["instrument"] = {
+        "type": "linear",
+        "symbol": "XYP",
+        "underlying": "XYZ",
+        "kind": "proxy",
+        "delta_ratio": 0.1,
+        "basis_vol": 0.05,
+    }
+    client = _client(tmp_path)
+    body = client.post("/v1/hedge", headers=ALICE, json=request).json()
+    assert body["excluded"] == []
+    request["candidates"][0]["quote"].update(bid=99.99, ask=100.01)
+    assert len(client.post("/v1/hedge", headers=ALICE, json=request).json()["excluded"]) == 1
+
+
+def test_the_quote_gate_can_be_set_by_a_deployment_only(tmp_path, monkeypatch):
+    refused = _client(tmp_path).post(
+        "/v1/hedge", headers=ALICE, json=_stock_quoted_at(200.0, max_linear_quote_gap=2.0)
+    )
+    assert refused.status_code == 422
+    assert "max_linear_quote_gap" in refused.json()["error"]
+    monkeypatch.setenv("GN_GATE_MAX_LINEAR_QUOTE_GAP", "2.0")
+    allowed = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_stock_quoted_at(200.0))
+    assert allowed.json()["excluded"] == []
+
+
+def test_the_cli_shows_the_exclusion(tmp_path, capfd):
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_stock_quoted_at(200.0)))
+    assert main(["hedge", "--request", str(path)]) == 0
+    out = capfd.readouterr().out
+    assert "status: no_usable_candidates" in out
+    assert "1 candidates excluded" in out
+    assert main(["hedge", "--request", str(path), "--full"]) == 0
+    assert "the market implies" in capfd.readouterr().out
