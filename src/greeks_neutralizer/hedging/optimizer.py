@@ -1,0 +1,754 @@
+"""Hedge optimizer: a mixed-integer linear program over any number of instruments.
+
+Decision variables for each usable candidate i:
+    buy_touch_i, buy_deep_i, sell_touch_i, sell_deep_i >= 0   integer lots, by liquidity tier
+    used_i in {0, 1}                                          only with max_legs or a ticket cost
+For each target t: pos_t, neg_t >= 0, the absolute value of the residual exposure.
+For CVaR (Rockafellar-Uryasev): VaR level v (free) and tail excess u_s >= 0 per scenario.
+
+Solved by HiGHS through scipy.optimize.milp. Every proposal is then re-verified through a separate
+path: the hedged book is repriced from scratch, and Greeks and bands are checked against what the
+solver believed. A proposal that fails verification is an exception, not a warning.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+from scipy import sparse
+from scipy.optimize import Bounds, LinearConstraint, milp
+
+from greeks_neutralizer._version import __version__
+from greeks_neutralizer.data.quality import assess_quote, is_usable
+from greeks_neutralizer.domain import LinearInstrument, LinearKind, OptionContract, Position
+from greeks_neutralizer.errors import GNError, HedgeInfeasibleError
+from greeks_neutralizer.hedging.problem import (
+    ExcludedCandidate,
+    GreekTarget,
+    HedgeCandidate,
+    HedgeConfig,
+    HedgeLeg,
+    HedgeProblem,
+    HedgeProposal,
+    ProposalStatus,
+    ResidualLine,
+    RunManifest,
+    VerificationReport,
+)
+from greeks_neutralizer.market import MarketSnapshot
+from greeks_neutralizer.pricing.book import Exposure, unit_exposures, value_book, value_options
+from greeks_neutralizer.risk.scenarios import book_scenario_pnl, scenario_pnl_matrix
+
+_DEFAULT_MAX_UNITS = 1_000_000
+_MIN_WINDOW_LOTS = 25.0
+_WINDOW_FRACTION = 0.5
+_TRADING_DAYS = 252.0
+
+
+class VerificationError(GNError):
+    """The solver's solution did not survive independent repricing. Nothing may trade on it."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Usable:
+    candidate: HedgeCandidate
+    exposure: Exposure
+    multiplier: float
+    mid_value: float
+    buy_cost_touch: float
+    sell_cost_touch: float
+    buy_touch_cap: int
+    sell_touch_cap: int
+    buy_total_cap: int
+    sell_total_cap: int
+    basis_risk_per_unit_1d: float
+
+
+def _filter_candidates(
+    problem: HedgeProblem, snapshot: MarketSnapshot
+) -> tuple[list[_Usable], list[ExcludedCandidate]]:
+    """Apply quote gates and build per-unit economics. Exclusions carry their reason."""
+    config = problem.config
+    policy = config.quality_policy()
+    excluded: list[ExcludedCandidate] = []
+    live: list[HedgeCandidate] = []
+    for candidate in problem.candidates:
+        name = candidate.instrument.describe()
+        if candidate.instrument.underlying not in snapshot.underlyings:
+            excluded.append(ExcludedCandidate(name, "no market data for its underlying"))
+            continue
+        instrument = candidate.instrument
+        if isinstance(instrument, OptionContract) and instrument.expiry <= snapshot.as_of:
+            excluded.append(ExcludedCandidate(name, "expired"))
+            continue
+        flags = assess_quote(candidate.quote, snapshot.as_of, policy=policy)
+        if not is_usable(flags):
+            excluded.append(
+                ExcludedCandidate(
+                    name, "unusable quote: " + ", ".join(sorted(f.value for f in flags))
+                )
+            )
+            continue
+        live.append(candidate)
+
+    if not config.allow_extrapolated_vol:
+        options = [c for c in live if isinstance(c.instrument, OptionContract)]
+        contracts = [c.instrument for c in options if isinstance(c.instrument, OptionContract)]
+        if contracts:
+            flagged = value_options(contracts, snapshot, tree_steps=25).extrapolated
+            beyond = {id(c) for c, bad in zip(options, flagged, strict=True) if bad}
+            for candidate in live:
+                if id(candidate) in beyond:
+                    excluded.append(
+                        ExcludedCandidate(
+                            candidate.instrument.describe(), "strike beyond the surface's quotes"
+                        )
+                    )
+            live = [c for c in live if id(c) not in beyond]
+
+    exposures = unit_exposures([c.instrument for c in live], snapshot) if live else ()
+    usable = [
+        _economics(candidate, exposure, snapshot)
+        for candidate, exposure in zip(live, exposures, strict=True)
+    ]
+    return usable, excluded
+
+
+def _economics(candidate: HedgeCandidate, exposure: Exposure, snapshot: MarketSnapshot) -> _Usable:
+    instrument = candidate.instrument
+    multiplier = instrument.multiplier
+    quote = candidate.quote
+    half = quote.half_spread * multiplier
+    lot = candidate.lot_size
+    # A zero bid means nobody will buy it from you at any price.
+    can_sell = quote.bid > 0.0
+
+    def in_lots(units: int) -> int:
+        return units // lot
+
+    buy_max = _DEFAULT_MAX_UNITS if candidate.max_buy is None else candidate.max_buy
+    sell_max = _DEFAULT_MAX_UNITS if candidate.max_sell is None else candidate.max_sell
+    if candidate.displayed_only:
+        buy_max = min(buy_max, quote.ask_size)
+        sell_max = min(sell_max, quote.bid_size)
+    if not can_sell:
+        sell_max = 0
+    basis = 0.0
+    if isinstance(instrument, LinearInstrument) and instrument.kind is LinearKind.PROXY:
+        unit_notional = abs(exposure.delta_dollars)
+        basis = unit_notional * instrument.basis_vol / np.sqrt(_TRADING_DAYS)
+    return _Usable(
+        candidate=candidate,
+        exposure=exposure,
+        multiplier=multiplier,
+        mid_value=quote.mid * multiplier,
+        buy_cost_touch=half + candidate.fee_per_unit,
+        sell_cost_touch=half + candidate.fee_per_unit,
+        buy_touch_cap=in_lots(min(quote.ask_size, buy_max)),
+        sell_touch_cap=in_lots(min(quote.bid_size, sell_max)),
+        buy_total_cap=in_lots(buy_max),
+        sell_total_cap=in_lots(sell_max),
+        basis_risk_per_unit_1d=float(basis),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Solution:
+    lots: NDArray[np.int64]
+    objective: float
+    gap: float
+    lower_bound: float
+
+
+class _Program:
+    """Builds and solves the MILP. Column layout is stored so results can be read back by name."""
+
+    def __init__(
+        self,
+        problem: HedgeProblem,
+        usable: list[_Usable],
+        book_by_underlying: dict[str, Exposure],
+        book_scenario: NDArray[np.float64],
+        unit_scenario: NDArray[np.float64],
+    ) -> None:
+        self.problem = problem
+        self.usable = usable
+        self.book_by_underlying = book_by_underlying
+        self.book_scenario = book_scenario
+        self.unit_scenario = unit_scenario
+        self.targets = problem.targets
+        self.n = len(usable)
+        self.nt = len(self.targets)
+        self.ns = len(problem.scenarios) if problem.config.cvar_weight > 0.0 else 0
+        config = problem.config
+        self.use_binary = config.max_legs is not None or config.ticket_cost > 0.0
+
+        # Columns: 4n trade tiers, optional n binaries, 2nt abs parts, then CVaR v and u_s.
+        self.i_trade = 0
+        self.i_used = 4 * self.n
+        self.i_abs = self.i_used + (self.n if self.use_binary else 0)
+        self.i_v = self.i_abs + 2 * self.nt
+        self.i_u = self.i_v + (1 if self.ns else 0)
+        self.size = self.i_u + self.ns
+
+    def _exposure_column(self, target: GreekTarget, row: _Usable) -> float:
+        if row.candidate.instrument.underlying != target.underlying:
+            return 0.0
+        return float(getattr(row.exposure, target.greek.value))
+
+    def book_value(self, target: GreekTarget) -> float:
+        exposure = self.book_by_underlying.get(target.underlying, Exposure())
+        return float(getattr(exposure, target.greek.value))
+
+    def _costs(self) -> NDArray[np.float64]:
+        config = self.problem.config
+        c = np.zeros(self.size, dtype=np.float64)
+        for i, row in enumerate(self.usable):
+            lot = row.candidate.lot_size
+            impact = row.candidate.impact_per_unit
+            basis = config.risk_aversion * row.basis_risk_per_unit_1d
+            c[4 * i + 0] = lot * (row.buy_cost_touch + basis)
+            c[4 * i + 1] = lot * (row.buy_cost_touch + impact + basis)
+            c[4 * i + 2] = lot * (row.sell_cost_touch + basis)
+            c[4 * i + 3] = lot * (row.sell_cost_touch + impact + basis)
+            if self.use_binary:
+                c[self.i_used + i] = config.ticket_cost
+        for t, target in enumerate(self.targets):
+            penalty = config.risk_aversion * target.effective_weight
+            c[self.i_abs + 2 * t] = penalty
+            c[self.i_abs + 2 * t + 1] = penalty
+        if self.ns:
+            c[self.i_v] = config.cvar_weight
+            tail = config.cvar_weight / ((1.0 - config.cvar_alpha) * self.ns)
+            c[self.i_u : self.i_u + self.ns] = tail
+        return c
+
+    def _variable_bounds(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        lb = np.zeros(self.size, dtype=np.float64)
+        ub = np.full(self.size, np.inf, dtype=np.float64)
+        for i, row in enumerate(self.usable):
+            ub[4 * i + 0] = row.buy_touch_cap
+            ub[4 * i + 1] = max(row.buy_total_cap - row.buy_touch_cap, 0)
+            ub[4 * i + 2] = row.sell_touch_cap
+            ub[4 * i + 3] = max(row.sell_total_cap - row.sell_touch_cap, 0)
+            if self.use_binary:
+                ub[self.i_used + i] = 1.0
+        if self.ns:
+            lb[self.i_v] = -np.inf
+        return lb, ub
+
+    def _net_units(self, i: int) -> dict[int, float]:
+        lot = float(self.usable[i].candidate.lot_size)
+        return {4 * i + 0: lot, 4 * i + 1: lot, 4 * i + 2: -lot, 4 * i + 3: -lot}
+
+    def _constraints(self, elastic: bool = False) -> tuple[list[LinearConstraint], list[str]]:
+        rows: list[int] = []
+        cols: list[int] = []
+        vals: list[float] = []
+        lo: list[float] = []
+        hi: list[float] = []
+        names: list[str] = []
+
+        def add(entries: dict[int, float], low: float, high: float, name: str) -> None:
+            r = len(lo)
+            for col, value in entries.items():
+                rows.append(r)
+                cols.append(col)
+                vals.append(value)
+            lo.append(low)
+            hi.append(high)
+            names.append(name)
+
+        for t, target in enumerate(self.targets):
+            base = self.book_value(target)
+            terms: dict[int, float] = {}
+            for i, row in enumerate(self.usable):
+                exposure = self._exposure_column(target, row)
+                if exposure != 0.0:
+                    for col, sign in self._net_units(i).items():
+                        terms[col] = sign * exposure
+            # residual = base + sum(terms) = pos - neg
+            definition = dict(terms)
+            definition[self.i_abs + 2 * t] = -1.0
+            definition[self.i_abs + 2 * t + 1] = 1.0
+            add(definition, -base, -base, f"residual:{target.underlying}:{target.greek.value}")
+            if not elastic and (target.lower is not None or target.upper is not None):
+                low = -np.inf if target.lower is None else target.lower - base
+                high = np.inf if target.upper is None else target.upper - base
+                add(terms, low, high, f"band:{target.underlying}:{target.greek.value}")
+
+        config = self.problem.config
+        if config.premium_budget is not None and not elastic:
+            terms = {}
+            for i, row in enumerate(self.usable):
+                for col, sign in self._net_units(i).items():
+                    terms[col] = sign * row.mid_value
+            add(terms, -np.inf, config.premium_budget, "premium_budget")
+
+        if self.use_binary:
+            for i, row in enumerate(self.usable):
+                cap = float(max(row.buy_total_cap, row.sell_total_cap, 1))
+                terms = {4 * i + k: 1.0 for k in range(4)}
+                terms[self.i_used + i] = -cap
+                add(terms, -np.inf, 0.0, f"used:{i}")
+            if config.max_legs is not None and not elastic:
+                terms = {self.i_used + i: 1.0 for i in range(self.n)}
+                add(terms, 0.0, float(config.max_legs), "max_legs")
+
+        for s in range(self.ns):
+            # u_s >= loss_s - v, where loss_s = -(book_pnl_s + sum x_i pnl_is)
+            terms = {self.i_u + s: 1.0, self.i_v: 1.0}
+            for i in range(self.n):
+                pnl = float(self.unit_scenario[s, i])
+                if pnl != 0.0:
+                    for col, sign in self._net_units(i).items():
+                        terms[col] = sign * pnl
+            add(terms, -float(self.book_scenario[s]), np.inf, f"cvar:{s}")
+
+        if not lo:
+            return [], []
+        matrix = sparse.csr_array((vals, (rows, cols)), shape=(len(lo), self.size))
+        return [LinearConstraint(matrix, np.array(lo), np.array(hi))], names
+
+    def _integrality(self) -> NDArray[np.int64]:
+        """Integer lots, except fine-grained linear hedges, which are solved then rounded.
+
+        Branching on share counts up to a million costs real solve time and buys nothing: rounding a
+        share is immaterial, and the rounded result is what gets verified and reported.
+        """
+        kinds = np.zeros(self.size, dtype=np.int64)
+        for i, row in enumerate(self.usable):
+            instrument = row.candidate.instrument
+            fine = isinstance(instrument, LinearInstrument) and instrument.multiplier == 1.0
+            if not fine:
+                kinds[4 * i : 4 * i + 4] = 1
+        if self.use_binary:
+            kinds[self.i_used : self.i_used + self.n] = 1
+        return kinds
+
+    def _net_lots(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
+        return np.array(
+            [x[4 * i] + x[4 * i + 1] - x[4 * i + 2] - x[4 * i + 3] for i in range(self.n)],
+            dtype=np.float64,
+        )
+
+    def _windowed_bounds(
+        self, lp_lots: NDArray[np.float64], widen: float
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Bounds for the integer search: near the LP solution, and always able to drop a leg.
+
+        An integer hedge worth having sits close to the continuous optimum, since moving far from
+        it costs more than integrality can repay. Without this, HiGHS gets lot bounds of a million
+        and a weak big-M, and at its time limit it returned an incumbent 80% worse than a tighter
+        problem's: a constrained solve scored better than the unconstrained one.
+        """
+        lb, ub = self._variable_bounds()
+        for i, lots in enumerate(lp_lots):
+            window = widen * max(_MIN_WINDOW_LOTS, _WINDOW_FRACTION * abs(float(lots)))
+            high = max(float(lots) + window, 0.0)
+            low = min(float(lots) - window, 0.0)
+            ub[4 * i + 0] = min(ub[4 * i + 0], np.ceil(high))
+            ub[4 * i + 1] = min(ub[4 * i + 1], np.ceil(high))
+            ub[4 * i + 2] = min(ub[4 * i + 2], np.ceil(-low))
+            ub[4 * i + 3] = min(ub[4 * i + 3], np.ceil(-low))
+        return lb, ub
+
+    def solve(self) -> _Solution:
+        """LP relaxation, then an integer search in a window around it.
+
+        The relaxation is fast, gives the true lower bound on the objective, and decides
+        feasibility. If the window excludes every integer solution, the search widens once.
+        `gap` is measured against the LP bound, so it reports what integrality cost in total and
+        cannot be fooled by an incumbent returned at the time limit.
+        """
+        config = self.problem.config
+        costs = self._costs()
+        constraints, _ = self._constraints()
+        lb, ub = self._variable_bounds()
+        relaxed = milp(
+            c=costs,
+            constraints=constraints,
+            bounds=Bounds(lb, ub),
+            options={"time_limit": config.time_limit_seconds, "disp": False},
+        )
+        if relaxed.x is None:
+            if relaxed.status == 2:
+                raise HedgeInfeasibleError(
+                    "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
+                )
+            raise GNError(f"hedge solver failed on the relaxation: {relaxed.message}")
+        lower_bound = float(relaxed.fun)
+        lp_lots = self._net_lots(np.asarray(relaxed.x, dtype=np.float64))
+
+        result = None
+        for widen in (1.0, 4.0):
+            win_lb, win_ub = self._windowed_bounds(lp_lots, widen)
+            result = milp(
+                c=costs,
+                constraints=constraints,
+                bounds=Bounds(win_lb, win_ub),
+                integrality=self._integrality(),
+                options={
+                    "mip_rel_gap": config.mip_gap,
+                    "time_limit": config.time_limit_seconds,
+                    "disp": False,
+                },
+            )
+            if result.x is not None:
+                break
+        if result is None or result.x is None:
+            raise HedgeInfeasibleError(
+                "the continuous hedge is feasible but no integer lots are: widen a band by about "
+                "one contract's exposure",
+                self.diagnose_infeasibility(),
+            )
+        x = np.asarray(result.x, dtype=np.float64)
+        lots = np.zeros(self.n, dtype=np.int64)
+        for i, row in enumerate(self.usable):
+            lot = row.candidate.lot_size
+            buys = round(x[4 * i]) + round(x[4 * i + 1])
+            sells = round(x[4 * i + 2]) + round(x[4 * i + 3])
+            lots[i] = (buys - sells) * lot
+        objective = float(result.fun)
+        gap = (objective - lower_bound) / max(abs(objective), 1.0)
+        return _Solution(lots, objective, max(gap, 0.0), lower_bound)
+
+    def diagnose_infeasibility(self) -> tuple[str, ...]:
+        """Which hard constraints cannot be met, found by solving with explicit slack on each.
+
+        The relaxation minimizes total slack, so non-zero slack names the binding constraints
+        and how far each one is from achievable, in its own units.
+        """
+        config = self.problem.config
+        banded = [t for t in self.targets if t.lower is not None or t.upper is not None]
+        budget = config.premium_budget
+        extra = 2 * len(banded) + (1 if budget is not None else 0)
+        base_constraints, _ = self._constraints(elastic=True)
+        size = self.size + extra
+        rows: list[int] = []
+        cols: list[int] = []
+        vals: list[float] = []
+        lo: list[float] = []
+        hi: list[float] = []
+        labels: list[str] = []
+        next_slack = self.size
+
+        def net_terms(column_of: Any) -> dict[int, float]:
+            terms: dict[int, float] = {}
+            for i, row in enumerate(self.usable):
+                value = float(column_of(row))
+                if value != 0.0:
+                    for col, sign in self._net_units(i).items():
+                        terms[col] = sign * value
+            return terms
+
+        for target in banded:
+            base = self.book_value(target)
+            terms = net_terms(lambda row, t=target: self._exposure_column(t, row))
+            low = -np.inf if target.lower is None else target.lower - base
+            high = np.inf if target.upper is None else target.upper - base
+            r = len(lo)
+            for col, value in terms.items():
+                rows.append(r)
+                cols.append(col)
+                vals.append(value)
+            rows += [r, r]
+            cols += [next_slack, next_slack + 1]
+            vals += [1.0, -1.0]
+            lo.append(low)
+            hi.append(high)
+            label = f"{target.greek.value} on {target.underlying}"
+            labels += [
+                f"{label}: lower bound short by {{:.2f}}",
+                f"{label}: upper bound over by {{:.2f}}",
+            ]
+            next_slack += 2
+        if budget is not None:
+            terms = net_terms(lambda row: row.mid_value)
+            r = len(lo)
+            for col, value in terms.items():
+                rows.append(r)
+                cols.append(col)
+                vals.append(value)
+            rows.append(r)
+            cols.append(next_slack)
+            vals.append(-1.0)
+            lo.append(-np.inf)
+            hi.append(budget)
+            labels.append("premium budget over by {:.2f}")
+            next_slack += 1
+
+        if not lo:
+            return ("infeasible with no bands or budget: check candidate capacity",)
+
+        lb, ub = self._variable_bounds()
+        lb = np.concatenate([lb, np.zeros(extra)])
+        ub = np.concatenate([ub, np.full(extra, np.inf)])
+        # Scale each slack to its own constraint so a large-unit bound cannot dominate the choice.
+        cost = np.zeros(size, dtype=np.float64)
+        cost[self.size :] = 1.0
+        constraints = [
+            LinearConstraint(
+                sparse.csr_array((vals, (rows, cols)), shape=(len(lo), size)),
+                np.array(lo),
+                np.array(hi),
+            )
+        ]
+        for original in base_constraints:
+            matrix = sparse.hstack(
+                [original.A, sparse.csr_array((original.A.shape[0], extra))], format="csr"
+            )
+            constraints.append(LinearConstraint(matrix, original.lb, original.ub))
+        result = milp(
+            c=cost,
+            constraints=constraints,
+            bounds=Bounds(lb, ub),
+            options={"time_limit": config.time_limit_seconds, "disp": False},
+        )
+        if result.x is None:
+            return ("constraints conflict even with all bands relaxed: check capacity",)
+        slack = np.asarray(result.x[self.size :], dtype=np.float64)
+        found = tuple(
+            label.format(value) for label, value in zip(labels, slack, strict=True) if value > 1e-6
+        )
+        return found or ("infeasible only under integer lots: widen a band by one contract's size",)
+
+
+def _problem_fingerprint(problem: HedgeProblem) -> str:
+    payload = {
+        "book": [(p.instrument.key, p.quantity) for p in problem.book],
+        "candidates": [
+            (
+                c.instrument.key,
+                c.quote.bid,
+                c.quote.ask,
+                c.quote.bid_size,
+                c.quote.ask_size,
+                c.quote.timestamp.isoformat(),
+                c.fee_per_unit,
+                c.max_buy,
+                c.max_sell,
+                c.impact_per_unit,
+                c.lot_size,
+                c.displayed_only,
+            )
+            for c in problem.candidates
+        ],
+        "targets": [
+            (t.underlying, t.greek.value, t.lower, t.upper, t.weight) for t in problem.targets
+        ],
+        "scenarios": [
+            (s.name, s.spot_shock, s.vol_shock, s.skew_shock, s.term_power, s.days_forward)
+            for s in problem.scenarios
+        ],
+        "config": repr(problem.config),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def verify_proposal(
+    problem: HedgeProblem,
+    snapshot: MarketSnapshot,
+    legs: tuple[HedgeLeg, ...],
+    predicted: dict[tuple[str, str], float],
+    predicted_scenario: dict[str, float],
+) -> VerificationReport:
+    """Reprice the hedged book from scratch and compare with what the solver believed.
+
+    This uses position-level valuation rather than the unit matrix the solver saw, so a bookkeeping
+    error between lots, signs, multipliers, or underlyings would surface here.
+    """
+    hedged = (*problem.book, *(Position(leg.instrument, leg.quantity) for leg in legs))
+    book = value_book(hedged, snapshot)
+    worst_greek = 0.0
+    violations: list[str] = []
+    for target in problem.targets:
+        exposure = book.by_underlying.get(target.underlying, Exposure())
+        actual = float(getattr(exposure, target.greek.value))
+        expected = predicted[(target.underlying, target.greek.value)]
+        worst_greek = max(worst_greek, abs(actual - expected))
+        tolerance = 1e-6 * max(1.0, abs(actual))
+        if target.lower is not None and actual < target.lower - tolerance:
+            violations.append(f"{target.greek.value} {actual:.4f} below {target.lower}")
+        if target.upper is not None and actual > target.upper + tolerance:
+            violations.append(f"{target.greek.value} {actual:.4f} above {target.upper}")
+
+    worst_scenario = 0.0
+    if problem.scenarios:
+        repriced = book_scenario_pnl(hedged, snapshot, problem.scenarios)
+        for scenario, value in zip(problem.scenarios, repriced, strict=True):
+            worst_scenario = max(
+                worst_scenario, abs(float(value) - predicted_scenario[scenario.name])
+            )
+
+    # Dollars of tolerance: a small fraction of a cent per dollar of exposure, from float error.
+    scale = 1e-6 * max(1.0, sum(abs(v) for v in predicted.values()))
+    scenario_scale = 1e-6 * max(1.0, sum(abs(v) for v in predicted_scenario.values()))
+    passed = worst_greek <= scale and worst_scenario <= scenario_scale and not violations
+    return VerificationReport(passed, worst_greek, worst_scenario, tuple(violations))
+
+
+def solve_hedge(
+    problem: HedgeProblem, snapshot: MarketSnapshot, *, run_stability: bool = False
+) -> HedgeProposal:
+    """Solve, read back, verify independently, and report. Raises rather than returning a bad plan.
+
+    Raises HedgeInfeasibleError with the binding constraints when nothing satisfies the bands, and
+    VerificationError if the solution fails its independent repricing.
+    """
+    from greeks_neutralizer.hedging.diagnostics import stability_report
+
+    usable, excluded = _filter_candidates(problem, snapshot)
+    book = value_book(problem.book, snapshot)
+    issues = list(book.issues)
+    config = problem.config
+
+    book_scenario = book_scenario_pnl(problem.book, snapshot, problem.scenarios)
+    unit_scenario = (
+        scenario_pnl_matrix([u.candidate.instrument for u in usable], snapshot, problem.scenarios)
+        if usable and problem.scenarios
+        else np.zeros((len(problem.scenarios), len(usable)), dtype=np.float64)
+    )
+
+    program = _Program(problem, usable, dict(book.by_underlying), book_scenario, unit_scenario)
+    solution = program.solve()
+
+    legs = tuple(
+        _build_leg(row, int(quantity), problem)
+        for row, quantity in zip(usable, solution.lots, strict=True)
+        if quantity != 0
+    )
+
+    predicted: dict[tuple[str, str], float] = {}
+    residuals: list[ResidualLine] = []
+    for target in problem.targets:
+        before = program.book_value(target)
+        after = before + sum(
+            float(quantity) * program._exposure_column(target, row)
+            for row, quantity in zip(usable, solution.lots, strict=True)
+        )
+        predicted[(target.underlying, target.greek.value)] = after
+        residuals.append(
+            ResidualLine(
+                target.underlying, target.greek.value, before, after, target.lower, target.upper
+            )
+        )
+
+    scenario_after = (
+        book_scenario + unit_scenario @ solution.lots.astype(np.float64)
+        if usable and problem.scenarios
+        else book_scenario
+    )
+    predicted_scenario = {
+        s.name: float(v) for s, v in zip(problem.scenarios, scenario_after, strict=True)
+    }
+    verification = verify_proposal(problem, snapshot, legs, predicted, predicted_scenario)
+    if not verification.passed:
+        raise VerificationError(
+            "solution failed independent repricing: "
+            f"greek error {verification.max_abs_greek_error:.6g}, "
+            f"scenario error {verification.max_abs_scenario_error:.6g}, "
+            f"violations {verification.band_violations}"
+        )
+
+    hedged_book = value_book(
+        (*problem.book, *(Position(leg.instrument, leg.quantity) for leg in legs)), snapshot
+    )
+    transaction_cost = sum(leg.transaction_cost for leg in legs)
+    stability = None
+    if run_stability and legs:
+        stability = stability_report(problem, snapshot, solution.lots, usable, program)
+    basis_1d = float(
+        sum(
+            abs(int(q)) * row.basis_risk_per_unit_1d
+            for row, q in zip(usable, solution.lots, strict=True)
+        )
+    )
+    if basis_1d > 0.0:
+        issues.append(f"BASIS_RISK proxy hedges carry about {basis_1d:,.0f} of 1-day basis risk")
+    status = ProposalStatus.NO_TRADE if not legs else ProposalStatus.OPTIMAL
+    if legs and solution.gap > config.mip_gap:
+        status = ProposalStatus.WITHIN_GAP
+        issues.append(
+            f"INTEGRALITY_GAP objective {solution.objective:,.2f} against a continuous lower bound "
+            f"of {solution.lower_bound:,.2f}: integer lots cost at most {solution.gap:.1%}"
+        )
+    if stability is not None and not stability.is_stable:
+        status = ProposalStatus.UNSTABLE
+        issues.extend(f"UNSTABLE {note}" for note in stability.notes)
+
+    return HedgeProposal(
+        status=status,
+        legs=legs,
+        objective=solution.objective,
+        transaction_cost=transaction_cost,
+        net_premium=sum(leg.premium for leg in legs),
+        gross_lots=int(sum(abs(leg.quantity) for leg in legs)),
+        residuals=tuple(residuals),
+        before=dict(book.by_underlying),
+        after=dict(hedged_book.by_underlying),
+        scenario_pnl_before={
+            s.name: float(v) for s, v in zip(problem.scenarios, book_scenario, strict=True)
+        },
+        scenario_pnl_after=predicted_scenario,
+        excluded=tuple(excluded),
+        verification=verification,
+        stability=stability,
+        basis_risk_1d=basis_1d,
+        solver_gap=solution.gap,
+        objective_lower_bound=solution.lower_bound,
+        issues=tuple(issues),
+        manifest=RunManifest(
+            code_version=__version__,
+            market_fingerprint=snapshot.fingerprint(),
+            problem_fingerprint=_problem_fingerprint(problem),
+            as_of=snapshot.as_of,
+            solver="scipy.optimize.milp/HiGHS",
+        ),
+    )
+
+
+def _build_leg(row: _Usable, quantity: int, problem: HedgeProblem) -> HedgeLeg:
+    candidate = row.candidate
+    quote = candidate.quote
+    instrument = candidate.instrument
+    buying = quantity > 0
+    size = abs(quantity)
+    price = quote.ask if buying else quote.bid
+    touch_units = (row.buy_touch_cap if buying else row.sell_touch_cap) * candidate.lot_size
+    deep_units = max(size - touch_units, 0)
+    half_and_fee = row.buy_cost_touch if buying else row.sell_cost_touch
+    cost = size * half_and_fee + deep_units * candidate.impact_per_unit
+    premium = quantity * row.mid_value
+    return HedgeLeg(
+        instrument=instrument,
+        quantity=quantity,
+        expected_price=price,
+        premium=premium,
+        transaction_cost=cost,
+        rationale=_rationale(row, quantity, problem, cost),
+    )
+
+
+def _rationale(row: _Usable, quantity: int, problem: HedgeProblem, cost: float) -> str:
+    """One line of plain language: what this leg does to the risks the user asked about."""
+    parts: list[str] = []
+    for target in problem.targets:
+        if target.underlying != row.candidate.instrument.underlying:
+            continue
+        effect = quantity * float(getattr(row.exposure, target.greek.value))
+        if abs(effect) > 1e-9:
+            parts.append(f"{target.greek.value} {effect:+,.0f}")
+    verb = "Buy" if quantity > 0 else "Sell"
+    effects = ", ".join(parts) if parts else "scenario protection only"
+    return (
+        f"{verb} {abs(quantity)} {row.candidate.instrument.describe()}: {effects}; cost {cost:,.2f}"
+    )
+
+
+__all__ = ["HedgeConfig", "VerificationError", "solve_hedge", "verify_proposal"]
