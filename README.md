@@ -49,11 +49,20 @@ As a library:
 from datetime import UTC, datetime, timedelta
 
 from greeks_neutralizer.domain import (
-    ExerciseStyle, LinearInstrument, OptionContract, OptionRight, Position, Quote, SettlementKind,
+    ExerciseStyle,
+    LinearInstrument,
+    OptionContract,
+    OptionRight,
+    Position,
+    Quote,
+    SettlementKind,
 )
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.hedging.problem import (
-    GreekName, GreekTarget, HedgeCandidate, HedgeProblem,
+    GreekName,
+    GreekTarget,
+    HedgeCandidate,
+    HedgeProblem,
 )
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 
@@ -62,12 +71,14 @@ market = MarketSnapshot(
     now, {"XYZ": UnderlyingMarket("XYZ", 100.0, DiscountCurve.flat(0.05), FlatVol(0.25))}
 )
 short_call = OptionContract(
-    "XYZ", OptionRight.CALL, 100.0, now + timedelta(days=30),
-    ExerciseStyle.EUROPEAN, settlement=SettlementKind.CASH,
+    "XYZ",
+    OptionRight.CALL,
+    100.0,
+    now + timedelta(days=30),
+    ExerciseStyle.EUROPEAN,
+    settlement=SettlementKind.CASH,
 )
-stock = HedgeCandidate(
-    LinearInstrument("XYZ", "XYZ"), Quote(99.99, 100.01, 100_000, 100_000, now)
-)
+stock = HedgeCandidate(LinearInstrument("XYZ", "XYZ"), Quote(99.99, 100.01, 100_000, 100_000, now))
 problem = HedgeProblem(
     book=(Position(short_call, -10),),
     candidates=(stock,),
