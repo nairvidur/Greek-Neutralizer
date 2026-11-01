@@ -208,9 +208,11 @@ def book_scenario_pnl(
     return np.asarray(scenario_pnl_matrix(instruments, snapshot, scenarios) @ qty, dtype=np.float64)
 
 
-# Representative single-day moves. Spot is the S&P 500 close-to-close change and vol is the change
-# in the VIX close, checked against FRED VIXCLS where that series exists: see docs/risk/stress.md.
-# 1987 predates the VIX, so that vol shock is a judgment value and is labeled as one.
+# Representative single-day moves: S&P 500 close-to-close, and the change in the VIX close.
+# Run scripts/check_stress_table.py to compare them with FRED. As of 2026-11 every VIX move since
+# 2008 and the 2018, 2020, and 2024 spot moves match. Spot moves before October 2016 are outside the
+# FRED series and are unverified here, and skew shocks are judgment values throughout. 1987 predates
+# the VIX, so its vol shock is also a judgment value.
 HISTORICAL_STRESSES: tuple[Scenario, ...] = (
     Scenario(
         "1987-10-19 Black Monday",
@@ -228,13 +230,13 @@ HISTORICAL_STRESSES: tuple[Scenario, ...] = (
     Scenario(
         "2008-10-15 post-rally selloff",
         spot_shock=-0.0903,
-        vol_shock=0.1349,
+        vol_shock=0.1412,
         skew_shock=-0.05,
     ),
     Scenario(
         "2015-08-24 flash crash open",
         spot_shock=-0.0394,
-        vol_shock=0.1274,
+        vol_shock=0.1271,
         skew_shock=-0.03,
     ),
     Scenario(
