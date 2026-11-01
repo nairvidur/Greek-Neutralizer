@@ -50,5 +50,5 @@ There is no live revocation.
 
 A proposal's manifest holds the code version, market fingerprint, and problem fingerprint.
 Run the same request on the same code version and compare the quantities and fingerprints.
-The solver has a wall-clock time limit, so a run that hits it on a slower machine can return a different incumbent.
-Compare objectives, not only lots, when a proposal was at its time limit.
+The search stops at a node count (`mip_node_limit`), so a replay on the same code gives the same result on any machine, under any load.
+The wall-clock limit is a backstop only: a run that reaches it carries a `SOLVER_TIME_LIMIT` issue, and it will not replay exactly.

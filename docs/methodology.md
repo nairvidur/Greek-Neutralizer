@@ -60,7 +60,7 @@ A mixed-integer linear program solved in stages:
 1. **Filter.** Candidates failing the quote gates, expired, or beyond the surface's quotes are excluded, with reasons reported.
 2. **Relax.** The LP relaxation gives a true lower bound on the objective and decides feasibility.
 3. **Screen.** Reduced costs select the candidates that can matter, at most 40 beyond the LP's own picks.
-4. **Search.** HiGHS searches integer lots in a window around the LP solution that can always drop a leg.
+4. **Search.** HiGHS searches integer lots in a window around the LP solution that can always drop a leg, stopping at a fixed node count so that results replay exactly under any machine load.
 5. **Polish.** A deterministic local search over lot moves takes only strict improvements.
 6. **Verify.** The hedged book is repriced from scratch, and a mismatch raises instead of returning a proposal.
 
@@ -85,13 +85,13 @@ Each perturbation re-solves in a slightly different market: spot +/-0.25%, vol +
 
 A proposal is `unstable` if the trade moves and the move costs real benefit, or if under any perturbation the held hedge is no longer feasible.
 Near-substitutes can swap freely: on one expiry, gamma and vega are exactly proportional, so a sensible hedge can have a singular Greek matrix.
-On the reconciled SPX hedge the trade moves 81% of its contracts, but holding it gives up only 5.4% of the benefit.
+On the reconciled SPX hedge the trade moves 87% of its contracts, but holding it gives up only 5.9% of the benefit.
 
 ## Scenarios and risk
 
 Every scenario reprices the book in full.
 Vol shocks are set at a 30-day reference and scale with tenor as `(30d / tau)^power`, capped at 3 times.
-`taylor_vs_full` shows how far Greeks are from the truth, using the vol change each scenario actually applies to each contract: on the SPX hedge the second-order expansion is wrong by up to $3.1M in the crash scenarios, which is why stress uses repricing.
+`taylor_vs_full` shows how far Greeks are from the truth, using the vol change each scenario actually applies to each contract: on the SPX hedge the second-order expansion is wrong by up to $3.8M in the crash scenarios, which is why stress uses repricing.
 
 VaR is historical simulation, ES averages the tail, and Kupiec's test backtests exceptions.
 Attribution decomposes P&L by start-of-period Greeks, and unexplained P&L is the control metric to track daily.

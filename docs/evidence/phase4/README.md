@@ -29,24 +29,24 @@ Dollars, over the 2,260 measured days, with spreads as modeled:
 | Unhedged | +1,533,830 | 17,981 | -214,972 | 68,224 | 0 |
 | Delta, daily | +843,170 | 8,629 | -121,703 | 35,752 | 32,487 |
 | Delta, no-trade band | +1,073,010 | 9,847 | -132,069 | 40,004 | 10,995 |
-| Optimizer, delta and gamma | -415,251 | 5,005 | -64,630 | 18,922 | 180,115 |
-| Optimizer, delta, gamma, vega | -739,655 | 2,394 | -37,883 | 8,683 | 284,465 |
-| Same, lower risk aversion | -520,115 | 2,823 | -30,779 | 8,223 | 222,056 |
-| Same, with CVaR | -122,069 | 3,182 | -16,193 | 5,349 | 237,793 |
+| Optimizer, delta and gamma | -487,373 | 4,928 | -70,315 | 18,856 | 181,495 |
+| Optimizer, delta, gamma, vega | -697,259 | 2,575 | -47,612 | 8,577 | 286,031 |
+| Same, lower risk aversion | -542,569 | 2,785 | -36,915 | 8,563 | 227,508 |
+| Same, with CVaR | -113,247 | 2,991 | -14,241 | 4,916 | 234,715 |
 
 Against daily delta hedging, with 95% block-bootstrap intervals:
 
 | Policy | Variance reduction | ES improvement | Mean P&L per day |
 |---|---|---|---|
-| Optimizer, delta, gamma, vega | 92.3% (89.1 to 94.7) | +$27,070 (20,311 to 34,454) | **-$700 (-986 to -386)** |
-| Same, lower risk aversion | 89.3% (81.4 to 94.5) | +$27,529 (20,376 to 35,390) | **-$603 (-907 to -258)** |
-| Same, with CVaR | 86.4% (69.2 to 95.9) | +$30,403 (21,866 to 40,465) | -$427 (-812 to +24) |
+| Optimizer, delta, gamma, vega | 91.1% (85.1 to 95.1) | +$27,175 (20,123 to 35,207) | **-$682 (-975 to -348)** |
+| Same, lower risk aversion | 89.6% (82.6 to 94.4) | +$27,189 (20,359 to 34,479) | **-$613 (-909 to -281)** |
+| Same, with CVaR | 88.0% (73.3 to 96.3) | +$30,836 (22,273 to 40,931) | -$423 (-801 to +19) |
 | Delta, no-trade band | -30.2% (-42.6 to -19.4) | -$4,252 (-6,688 to -1,763) | +$102 (-38 to +233) |
 
 ## How to read this
 
 **Risk reduction is large, and survives higher costs.**
-At three times the assumed spreads, variance reduction against delta is still 86.2% (77.2 to 92.3).
+At three times the assumed spreads, variance reduction against delta is still 84.9% (71.4 to 93.3).
 
 **It costs real money.**
 Unhedged, this book made money over the decade, because short options earn a volatility premium in this market.
@@ -62,9 +62,9 @@ Its parameters were set once, and were not tuned.
 
 | Day | Unhedged | Delta | Optimizer with CVaR |
 |---|---:|---:|---:|
-| 2018-02-05 | -65,013 | -65,516 | +9,221 |
-| 2020-03-16 | -190,888 | -121,703 | +16,906 |
-| 2024-08-05 | -141,567 | -49,453 | +8,210 |
+| 2018-02-05 | -65,013 | -65,516 | +7,928 |
+| 2020-03-16 | -190,888 | -121,703 | +14,609 |
+| 2024-08-05 | -141,567 | -49,453 | +8,602 |
 
 These three days are in the data but were picked in advance as known stress dates.
 They are not a test of a crash the policy has never seen, and CVaR's scenario list names them too: it contains these very moves.
@@ -104,4 +104,5 @@ curl -L 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO' -o DGS3MO.cs
 uv run python scripts/run_proxy_backtest.py SP500.csv VIXCLS.csv DGS3MO.csv --out results.json
 ```
 
-FRED revises data, and the solver has a wall-clock limit, so a rerun can differ slightly.
+FRED revises data, so a later download can differ.
+The search stops at a node count rather than a clock, so the same data and code give the same result.

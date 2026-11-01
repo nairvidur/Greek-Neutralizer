@@ -257,6 +257,7 @@ class _Solution:
     objective: float
     gap: float
     lower_bound: float
+    hit_time_limit: bool = False
 
 
 class _Program:
@@ -712,6 +713,7 @@ class _Program:
                 integrality=self._integrality(),
                 options={
                     "mip_rel_gap": config.mip_gap,
+                    "node_limit": config.mip_node_limit,
                     "time_limit": config.time_limit_seconds,
                     "disp": False,
                 },
@@ -743,7 +745,8 @@ class _Program:
                 "limits: widen a band by about one unit's exposure"
             )
         gap = (objective - lower_bound) / max(abs(objective), 1.0)
-        return _Solution(lots, objective, max(gap, 0.0), lower_bound)
+        hit_time_limit = result.status == 1 and "time limit" in str(result.message).lower()
+        return _Solution(lots, objective, max(gap, 0.0), lower_bound, hit_time_limit)
 
     def diagnose_infeasibility(self) -> tuple[str, ...]:
         """Which hard constraints cannot be met, found by solving with explicit slack on each.
@@ -1088,6 +1091,11 @@ def solve_hedge(
     status = ProposalStatus.NO_TRADE if not legs else ProposalStatus.OPTIMAL
     if not usable:
         status = ProposalStatus.NO_USABLE_CANDIDATES
+    if solution.hit_time_limit:
+        issues.append(
+            f"SOLVER_TIME_LIMIT the search stopped at the {config.time_limit_seconds:g}s backstop, "
+            "so this result depends on machine speed and will not replay exactly"
+        )
     if legs and solution.gap > config.mip_gap:
         status = ProposalStatus.WITHIN_GAP
         issues.append(

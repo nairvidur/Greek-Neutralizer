@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from numpy.testing import assert_allclose
 
 from greeks_neutralizer.domain import LinearInstrument, LinearKind, Position, Quote
-from greeks_neutralizer.errors import HedgeInfeasibleError
+from greeks_neutralizer.errors import HedgeInfeasibleError, ValidationError
 from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import (
     hedge_decay_forecast,
@@ -235,6 +235,38 @@ def test_exact_evaluator_reproduces_the_solver_objective(config):
         buys, sells = x[4 * i] + x[4 * i + 1], x[4 * i + 2] + x[4 * i + 3]
         wash += min(buys, sells) * (costs[4 * i] + costs[4 * i + 2])
     assert_allclose(program.evaluate(lots), result.fun - wash, rtol=1e-6)
+
+
+def _hard_option_problem(time_limit):
+    # Options only, so that integrality is hard and the search stops at a limit, not a proof.
+    return HedgeProblem(
+        BOOK,
+        CANDIDATES[1:],
+        DGV,
+        (),
+        HedgeConfig(risk_aversion=10.0, mip_gap=1e-6, time_limit_seconds=time_limit),
+    )
+
+
+def test_answer_does_not_depend_on_how_much_time_the_machine_had():
+    # Found comparing evidence runs: the wall-clock limit made results vary with machine load, so
+    # a proposal could not be replayed. A long and a short backstop must give the same trade.
+    snapshot = flat_snapshot()
+    roomy = solve_hedge(_hard_option_problem(30.0), snapshot)
+    tight = solve_hedge(_hard_option_problem(5.0), snapshot)
+    assert not any("SOLVER_TIME_LIMIT" in issue for issue in roomy.issues)
+    assert roomy.quantities == tight.quantities
+    assert roomy.objective == tight.objective
+
+
+def test_hitting_the_wall_clock_backstop_is_reported():
+    p = solve_hedge(_hard_option_problem(0.01), flat_snapshot())
+    assert any("SOLVER_TIME_LIMIT" in issue for issue in p.issues)
+
+
+def test_node_limit_must_be_positive():
+    with pytest.raises(ValidationError):
+        HedgeConfig(mip_node_limit=0)
 
 
 def test_objective_never_beats_its_continuous_lower_bound():

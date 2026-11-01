@@ -133,7 +133,10 @@ class HedgeConfig:
     ticket_cost: float = 0.0
     premium_budget: float | None = None
     mip_gap: float = 5e-3
-    time_limit_seconds: float = 1.0
+    # The search stops at a node count, which gives the same answer on any machine under any load.
+    # The wall-clock limit is only a backstop, and a run that reaches it says so.
+    mip_node_limit: int = 300
+    time_limit_seconds: float = 30.0
     max_quote_age: timedelta = timedelta(seconds=30)
     require_quote_size: bool = True
     allow_extrapolated_vol: bool = False
@@ -162,6 +165,10 @@ class HedgeConfig:
         for name in ("require_quote_size", "allow_extrapolated_vol"):
             if not isinstance(getattr(self, name), bool):
                 raise ValidationError(f"{name} must be true or false")
+        if isinstance(self.mip_node_limit, bool) or not isinstance(self.mip_node_limit, int):
+            raise ValidationError("mip_node_limit must be an integer")
+        if self.mip_node_limit < 1:
+            raise ValidationError("mip_node_limit must be at least 1")
         if self.time_limit_seconds <= 0.0:
             raise ValidationError("time_limit_seconds must be positive")
         if self.risk_aversion < 0.0 or self.cvar_weight < 0.0:

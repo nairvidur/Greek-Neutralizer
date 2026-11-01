@@ -176,7 +176,6 @@ def main() -> None:
         risk_aversion=1.0,
         max_legs=6,
         max_quote_age=timedelta(days=30),
-        time_limit_seconds=5.0,
     )
     problem = HedgeProblem(book, tuple(candidates), targets, scenarios, config)
 

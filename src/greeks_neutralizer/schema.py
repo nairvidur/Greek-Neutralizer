@@ -317,6 +317,7 @@ def _parse_config(data: Any) -> HedgeConfig:
         "premium_budget",
         "mip_gap",
         "time_limit_seconds",
+        "mip_node_limit",
         "max_quote_age_seconds",
         "require_quote_size",
         "allow_extrapolated_vol",

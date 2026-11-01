@@ -49,7 +49,6 @@ def _config(risk_aversion: float, cvar_weight: float = 0.0) -> HedgeConfig:
         risk_aversion=risk_aversion,
         cvar_weight=cvar_weight,
         cvar_alpha=0.8,
-        time_limit_seconds=0.5,
         mip_gap=1e-2,
         max_legs=6,
     )

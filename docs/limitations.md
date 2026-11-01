@@ -52,6 +52,7 @@ FRTB sensitivity export is not implemented.
 
 ## Numerics and performance
 
-- The solver has a wall-clock limit, so a run at the limit on a slower machine can return a different incumbent.
+- The search stops at a fixed node count, so a hard problem gets a good answer rather than a proven best one. The gap to the LP bound is reported.
+- Replay is exact only without a `SOLVER_TIME_LIMIT` issue, and on the same library versions, since HiGHS and SciPy updates can change results.
 - With `max_legs` or a ticket cost, the reported gap is against a weak bound and overstates the true shortfall.
 - Budgets in `docs/evidence/performance/` are provisional targets. Few repeats were run, so `p99` there is not a real tail measurement.

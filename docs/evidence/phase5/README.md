@@ -7,7 +7,7 @@ Gate: "end-to-end trader workflow in a browser, load test, restore drill, and th
 | Item | Status |
 |---|---|
 | End-to-end workflow in a real browser | **Done**, see below |
-| Container built and run | **Done:** starts as uid 10001, enforces auth, and returned a verified proposal over HTTP. That run did not write the audit log. The image's `/home/gn/data` directory was added afterward, and the image has not been rebuilt since |
+| Container built and run | **Done:** runs as uid 10001 with auth enforced. A proposal submitted over HTTP wrote its audit log to a named volume, and the chain stayed intact after the container was replaced |
 | Threat model | **Done** as a first version, in `docs/operations/security.md`. Not independently reviewed |
 | Audit log restart and integrity | **Tested** in `tests/`, including tampering and truncation |
 | Restore drill | **Not done** as a drill on a real deployment |
