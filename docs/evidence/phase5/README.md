@@ -19,13 +19,32 @@ Nothing here has run on a real deployment, and the threat model has had no indep
 Driven with Chrome through `chrome-devtools-axi`, against the running service:
 
 1. Alice connects, loads the sample, and proposes a hedge: `ui_proposal_desktop.png`.
-2. Alice submits it, opens it, and tries to approve her own proposal, and four-eyes refuses it: `ui_four_eyes_refused.png`.
-3. Bob connects, where Approve is disabled until he opens the proposal: `ui_review_before_approval.png`.
-4. Bob opens it, which renders its status, issues, legs, residuals, and exclusions, and approves it: `ui_approved.png`.
-5. Under 390 by 844 viewport emulation, the page has no horizontal overflow: `ui_phone.png`.
+2. Bob connects in a second tab, and his list shows 0 proposals.
+3. Alice submits it, opens it, and tries to approve her own proposal, and four-eyes refuses it: `ui_four_eyes_refused.png`.
+4. With no click from Bob, the proposal appears in his list at the next poll, where Approve is disabled until he opens it: `ui_review_before_approval.png`.
+5. Bob opens it, which renders its status, issues, legs, residuals, and exclusions, and approves it: `ui_approved.png`.
+6. Under 390 by 844 viewport emulation, the page has no horizontal overflow: `ui_phone.png`.
 
-The audit chain stayed intact, and the only console error was the expected 409 from step 2.
+The audit chain stayed intact.
+The only console error in Alice's tab was the expected 409 from step 3, and Bob's console was not read in this run.
 The sample uses illustrative values, not market data.
+
+### Approvals list while a page is open
+
+Before this change, with Bob connected first and Alice submitting afterwards, Bob's list still read "0 proposals submitted" more than 17 seconds later.
+The list now polls every 15 seconds after a successful Connect, and has a Refresh button.
+Observed in the same browser run, on one local service:
+
+- **Appears unprompted.** Alice's proposal appeared for Bob with no click, with Approve disabled until he opened it.
+- **No redraw without a change.** A marker set on the Approve button survived a poll with an unchanged response, while the last-updated time moved on.
+- **`opened` is kept.** After Bob opened the proposal, Approve stayed enabled through a poll and a Refresh. A second Connect disabled it again.
+- **One timer.** After that second Connect, 3 list requests were made in 46 seconds.
+- **No overlap.** With list requests delayed by 800 ms, five Refresh clicks made 2 requests, and at most 1 was in flight.
+- **Failure is visible.** With the service stopped, a poll and then a Refresh each showed "This list could not be updated: Failed to fetch. It still shows the list from" the last-updated time, with no dialog. The first poll after the service came back cleared it.
+- **Failed Connect stops polling.** A bad token showed "Not connected, so this list is not updating", disabled Refresh, and made 0 list requests in 16 seconds. A good token restored both.
+
+Only this list polls.
+The audit panel still updates on Connect and on the viewer's own actions, so at step 4 Bob's audit panel reads 0 records beside Alice's proposal until he acts.
 
 Browser testing found issues the test suite could not: a favicon 404, a token field outside a form, a button enabled before it could work, misaligned table headers, a duplicate status badge, and "-0" in the grid.
 It also exposed the stability defect, by blocking an approval that should have gone through.

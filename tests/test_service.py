@@ -86,6 +86,23 @@ def test_health_and_ui_are_open_but_hold_no_data(client):
             assert secret not in response.text
 
 
+def test_the_list_an_open_approver_polls_changes_only_when_a_proposal_does(client):
+    # The page redraws only on a changed response, so nothing in it may vary between polls.
+    empty = client.get("/v1/proposals", headers=BOB)
+    assert empty.json() == {"total": 0, "count": 0, "proposals": []}
+    assert client.get("/v1/proposals", headers=BOB).content == empty.content
+
+    submitted = client.post("/v1/proposals", headers=ALICE, json=example_request()).json()
+    listed = client.get("/v1/proposals", headers=BOB)
+    assert [(r["id"], r["state"]) for r in listed.json()["proposals"]] == [
+        (submitted["id"], "proposed")
+    ]
+    assert client.get("/v1/proposals", headers=BOB).content == listed.content
+
+    client.post(f"/v1/proposals/{submitted['id']}/approve", headers=BOB, json={})
+    assert client.get("/v1/proposals", headers=BOB).json()["proposals"][0]["state"] == "approved"
+
+
 def test_identity_comes_from_the_token(client):
     assert client.get("/v1/whoami", headers=ALICE).json() == {"actor": "alice"}
 

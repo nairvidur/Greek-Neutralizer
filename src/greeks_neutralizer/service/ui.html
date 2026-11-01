@@ -127,7 +127,11 @@ label { color: var(--muted); font-size: 13px; }
     <div class="row" style="margin:0 0 10px">
       <label for="reason">Reason, required to reject</label>
       <input id="reason" type="text" size="40">
+      <span class="spacer"></span>
+      <span id="approvalsUpdated" class="tag"></span>
+      <button id="refresh" disabled>Refresh</button>
     </div>
+    <div id="approvalsProblem" role="alert"></div>
     <div id="approvals" class="scroll"><div class="empty">Nothing submitted.</div></div>
   </section>
   <section class="wide">
@@ -289,9 +293,60 @@ function renderFrontier(data) {
 }
 
 const opened = new Set();
+const APPROVALS_POLL_MS = 15000, APPROVALS_TIMEOUT_MS = 10000;
+let approvalsTimer = null, approvalsSession = 0, approvalsInFlight = null, approvalsQueued = null;
+let approvalsShown = "", approvalsUpdatedAt = "";
 
-async function refreshApprovals() {
-  const data = await api("/v1/proposals");
+function showApprovalsProblem(message) {
+  const shown = approvalsUpdatedAt
+    ? `It still shows the list from ${approvalsUpdatedAt}.` : "The list has not loaded.";
+  $("approvalsProblem").innerHTML = `<div class="notice bad">${escapeHtml(message)} ${shown}</div>`;
+}
+
+async function loadApprovals() {
+  const session = approvalsSession;
+  try {
+    const data = await api("/v1/proposals", {signal: AbortSignal.timeout(APPROVALS_TIMEOUT_MS)});
+    if (session !== approvalsSession) return;
+    const shown = JSON.stringify([data, [...opened]]);
+    if (shown !== approvalsShown) {
+      renderApprovals(data);
+      approvalsShown = shown;
+    }
+    approvalsUpdatedAt = new Date().toLocaleTimeString();
+    $("approvalsUpdated").textContent = `Last updated ${approvalsUpdatedAt}`;
+    $("approvalsProblem").innerHTML = "";
+  } catch (e) {
+    if (session === approvalsSession) showApprovalsProblem(`This list could not be updated: ${e.message}.`);
+  }
+}
+
+function refreshApprovals() {
+  if (!approvalsInFlight) {
+    approvalsInFlight = loadApprovals().finally(() => { approvalsInFlight = null; });
+    return approvalsInFlight;
+  }
+  approvalsQueued ??= approvalsInFlight.then(() => {
+    approvalsQueued = null;
+    return refreshApprovals();
+  });
+  return approvalsQueued;
+}
+
+function startApprovalPolling() {
+  $("refresh").disabled = false;
+  approvalsTimer = setInterval(() => { if (!approvalsInFlight) refreshApprovals(); }, APPROVALS_POLL_MS);
+}
+
+function stopApprovalPolling() {
+  clearInterval(approvalsTimer);
+  approvalsSession += 1;
+  $("refresh").disabled = true;
+}
+
+$("refresh").addEventListener("click", refreshApprovals);
+
+function renderApprovals(data) {
   if (!data.total) {
     $("approvals").innerHTML = `<div class="empty">0 proposals submitted.</div>`;
     return;
@@ -335,11 +390,19 @@ $("login").addEventListener("submit", (event) => {
 });
 
 async function connect() {
+  stopApprovalPolling();
   token = $("token").value.trim();
   opened.clear();
-  const me = await api("/v1/whoami");
+  let me;
+  try {
+    me = await api("/v1/whoami");
+  } catch (e) {
+    showApprovalsProblem("Not connected, so this list is not updating.");
+    throw e;
+  }
   $("who").textContent = `Signed in as ${me.actor}`;
   ["load", "propose", "frontier", "submit"].forEach((id) => { $(id).disabled = false; });
+  startApprovalPolling();
   if (!$("request").value) await loadSample();
   await Promise.all([refreshApprovals(), refreshAudit()]);
 }
