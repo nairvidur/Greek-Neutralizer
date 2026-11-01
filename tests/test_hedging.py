@@ -183,19 +183,26 @@ def test_a_constraint_cannot_improve_the_objective():
     assert capped.objective_lower_bound >= free.objective_lower_bound - 1e-6
 
 
-def test_exact_evaluator_reproduces_the_solver_objective():
+@pytest.mark.parametrize(
+    "config",
+    [
+        HedgeConfig(risk_aversion=1.0),
+        HedgeConfig(risk_aversion=1.0, cvar_weight=0.5, cvar_alpha=0.5),
+        HedgeConfig(risk_aversion=1.0, cvar_weight=0.5, ticket_cost=5.0),
+        HedgeConfig(risk_aversion=0.0, cvar_weight=1.0, cvar_alpha=0.8),
+    ],
+    ids=["greeks", "cvar", "cvar-ticket", "cvar-only"],
+)
+def test_exact_evaluator_reproduces_the_solver_objective(config):
+    # Two independent statements of one objective must agree. Options only, since all lots are then
+    # integer: a continuous share hedge would differ from its rounding, by design.
+    from scipy.optimize import Bounds, milp
+
     from greeks_neutralizer.hedging.optimizer import _filter_candidates, _Program
     from greeks_neutralizer.risk.scenarios import book_scenario_pnl, scenario_pnl_matrix
 
-    # Checks the MILP's formulation against an independent statement of the same objective.
     scenarios = HISTORICAL_STRESSES[:4]
-    problem = HedgeProblem(
-        BOOK,
-        CANDIDATES,
-        DGV,
-        scenarios,
-        HedgeConfig(risk_aversion=1.0, cvar_weight=0.5, ticket_cost=5.0),
-    )
+    problem = HedgeProblem(BOOK, CANDIDATES[1:], DGV, scenarios, config)
     snapshot = flat_snapshot()
     usable, _ = _filter_candidates(problem, snapshot)
     book = value_book(problem.book, snapshot)
@@ -207,21 +214,26 @@ def test_exact_evaluator_reproduces_the_solver_objective():
         scenario_pnl_matrix([u.candidate.instrument for u in usable], snapshot, scenarios),
     )
     constraints, _ = program._constraints()
-    from scipy.optimize import Bounds, milp
-
     lb, ub = program._variable_bounds()
+    # Bounded lots keep the exact solve fast. Agreement at this solution is what is being tested.
+    ub[: 4 * program.n] = np.minimum(ub[: 4 * program.n], 30.0)
     result = milp(
         c=program._costs(),
         constraints=constraints,
         bounds=Bounds(lb, ub),
-        integrality=np.ones(program.size, dtype=np.int64) * 0 + program._integrality(),
-        options={"mip_rel_gap": 1e-4, "time_limit": 10.0},
+        integrality=program._integrality(),
+        options={"mip_rel_gap": 1e-3, "time_limit": 2.0},
     )
     x = np.asarray(result.x)
     lots = np.round(program._net_lots(x)).astype(np.int64)
-    # Fine-grained shares are not rounded in the MILP, so re-solve the stated objective at the
-    # solver's own values by keeping the tolerance to one share's exposure.
-    assert_allclose(program.evaluate(lots), result.fun, atol=2.0, rtol=2e-3)
+    # An incumbent at the time limit can hold offsetting lots, which pay cost and net to nothing.
+    # Reading back the net position is right, so the evaluator should come out lower by exactly that.
+    costs = program._costs()
+    wash = 0.0
+    for i in range(program.n):
+        buys, sells = x[4 * i] + x[4 * i + 1], x[4 * i + 2] + x[4 * i + 3]
+        wash += min(buys, sells) * (costs[4 * i] + costs[4 * i + 2])
+    assert_allclose(program.evaluate(lots), result.fun - wash, rtol=1e-6)
 
 
 def test_objective_never_beats_its_continuous_lower_bound():
@@ -297,7 +309,9 @@ def test_lot_size_is_respected():
 
 
 def test_impact_tier_is_used_only_past_displayed_size():
-    deep = stock_candidate(half=0.01, size=100, impact_per_unit=0.5)
+    deep = stock_candidate(
+        half=0.01, size=100, impact_per_unit=0.5, max_buy=100_000, max_sell=100_000
+    )
     targets = (GreekTarget("XYZ", GreekName.DELTA, weight=1.0),)
     p = solve(candidates=(deep,), targets=targets)
     size = abs(p.legs[0].quantity)
@@ -361,6 +375,50 @@ def test_cvar_objective_improves_worst_tail():
     )
     assert min(hedged.scenario_pnl_after.values()) > min(unhedged.scenario_pnl_after.values())
     assert hedged.verification.passed
+
+
+def test_cvar_cannot_farm_scenario_profit_with_unlimited_size():
+    # Found by the proxy backtest: 11.6 billion lots and a $10 trillion loss. With crash-heavy
+    # scenarios, long puts make every scenario profitable, so CVaR went negative without limit and
+    # the solver was paid to buy more. Protection earns nothing once the tail loss reaches zero.
+    book = (Position(euro("put", 95, 30), -10),)
+    candidates = (option_candidate("put", 90, 30), option_candidate("put", 85, 60))
+    targets = (GreekTarget("XYZ", GreekName.DELTA, weight=0.0),)
+    p = solve(
+        book=book,
+        candidates=candidates,
+        targets=targets,
+        scenarios=HISTORICAL_STRESSES,
+        config=HedgeConfig(risk_aversion=0.0, cvar_weight=1.0, cvar_alpha=0.8),
+    )
+    assert p.gross_lots < 200
+    # It still protects: the tail loss is removed, not left in place.
+    assert min(p.scenario_pnl_after.values()) > min(p.scenario_pnl_before.values())
+
+
+def test_objective_cannot_go_negative_from_scenario_gains():
+    book = (Position(euro("put", 95, 30), 10),)  # already long protection
+    p = solve(
+        book=book,
+        candidates=(option_candidate("put", 90, 30),),
+        targets=(GreekTarget("XYZ", GreekName.DELTA, weight=0.0),),
+        scenarios=HISTORICAL_STRESSES,
+        config=HedgeConfig(risk_aversion=0.0, cvar_weight=1.0, cvar_alpha=0.8),
+    )
+    assert p.objective >= 0.0
+    assert p.legs == ()
+
+
+def test_no_option_leg_can_exceed_the_lot_cap():
+    # A hard stop independent of the objective, so that no modeling error can size a leg absurdly.
+    book = (Position(euro("call", 100, 30), -20000),)
+    p = solve(
+        book=book,
+        candidates=(option_candidate("call", 100, 60, size=100000),),
+        targets=(GreekTarget("XYZ", GreekName.VEGA, weight=10.0),),
+        config=HedgeConfig(risk_aversion=10.0, max_lots_per_leg=1000),
+    )
+    assert abs(p.legs[0].quantity) <= 1000
 
 
 def test_proxy_hedge_reports_basis_risk():

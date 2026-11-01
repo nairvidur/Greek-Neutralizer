@@ -52,7 +52,7 @@ def policy_stats(result: BacktestResult) -> PolicyStats:
         hedge_cost=sum(d.hedge_cost for d in result.days),
         book_cost=sum(d.book_cost for d in result.days),
         hedge_lots=sum(d.hedge_lots for d in result.days),
-        failed_days=sum(d.failures for d in result.days),
+        failed_days=len(result.failures),
     )
 
 
@@ -74,6 +74,8 @@ class Comparison:
     es_improvement_ci: tuple[float, float]
     mean_pnl_difference_per_day: float
     mean_pnl_difference_ci: tuple[float, float]
+    policy_failed_days: int = 0
+    baseline_failed_days: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -100,6 +102,8 @@ def compare(
     a, b = result.pnl(), baseline.pnl()
     if a.shape != b.shape:
         raise ValidationError("comparison needs results over the same days")
+    if result.dates() != baseline.dates():
+        raise ValidationError("comparison needs results on the same dates, and these differ")
     if a.size < 2 * block:
         raise ValidationError(f"need at least {2 * block} days, got {a.size}")
     rng = np.random.default_rng(seed)
@@ -130,6 +134,8 @@ def compare(
         es_improvement_ci=ci(es_gain),
         mean_pnl_difference_per_day=float(a.mean() - b.mean()),
         mean_pnl_difference_ci=ci(mean_diff),
+        policy_failed_days=len(result.failures),
+        baseline_failed_days=len(baseline.failures),
     )
 
 

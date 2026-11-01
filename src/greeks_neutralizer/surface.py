@@ -25,6 +25,8 @@ from greeks_neutralizer.pricing.black import FloatArray
 _CORE_STDEVS = 3.0
 _WING_STDEVS = 6.0
 _CALENDAR_TOLERANCE = 0.01
+_MIN_TENOR_RATIO = 0.5
+_MAX_TENOR_RATIO = 1.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +133,9 @@ class SviSurface:
         taus = np.array([s.tau for s in self.slices])
         nearest = np.argmin(np.abs(taus[:, None] - tau_[None, :]), axis=0)
         ranges = np.asarray(self.quoted_ranges, dtype=np.float64)
-        return np.asarray((k_ < ranges[nearest, 0]) | (k_ > ranges[nearest, 1]), dtype=np.bool_)
+        beyond_strike = (k_ < ranges[nearest, 0]) | (k_ > ranges[nearest, 1])
+        beyond_tenor = (tau_ < _MIN_TENOR_RATIO * taus[0]) | (tau_ > _MAX_TENOR_RATIO * taus[-1])
+        return np.asarray(beyond_strike | beyond_tenor, dtype=np.bool_)
 
     def total_variance(self, k: FloatArray, tau: FloatArray) -> FloatArray:
         k_, tau_ = np.broadcast_arrays(
@@ -191,6 +195,7 @@ class SviSurface:
         return {
             "kind": "svi",
             "slices": [(s.tau, s.a, s.b, s.rho, s.m, s.sigma) for s in self.slices],
+            "quoted_ranges": list(self.quoted_ranges),
         }
 
 
@@ -207,6 +212,7 @@ class SliceFit:
     butterfly_min_g: float
     k_min: float
     k_max: float
+    converged: bool = True
 
 
 _LOWER = np.array([-1.0, 1e-7, -0.999, -2.0, 1e-5])
@@ -298,6 +304,7 @@ def fit_svi_slice(
         butterfly_min_g=float(np.min(slice_.durrleman_g(check_grid(slice_)))),
         k_min=float(np.min(k_)),
         k_max=float(np.max(k_)),
+        converged=bool(best.success),
     )
 
 

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --python ${{ matrix.python }} --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest -q
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --wheel --out-dir dist
+      - name: Use the wheel in a clean environment, away from the source tree
+        run: |
+          uv venv --python 3.11 /tmp/clean
+          uv pip install --python /tmp/clean/bin/python dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/gn --version
+          /tmp/clean/bin/gn example --kind hedge > request.json
+          /tmp/clean/bin/gn hedge --request request.json | grep 'verified: true'
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv export --locked --no-dev --no-hashes --no-emit-project -o requirements.txt
+      - run: uvx pip-audit -r requirements.txt

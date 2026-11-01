@@ -11,6 +11,7 @@ from greeks_neutralizer.domain import Quote
 
 
 class QuoteFlag(StrEnum):
+    NO_OFFER = "no_offer"
     CROSSED = "crossed"
     LOCKED = "locked"
     ZERO_BID = "zero_bid"
@@ -25,6 +26,7 @@ class QuoteFlag(StrEnum):
 # Flags that make a quote unusable for marking or hedging. The rest are warnings.
 BLOCKING: frozenset[QuoteFlag] = frozenset(
     {
+        QuoteFlag.NO_OFFER,
         QuoteFlag.CROSSED,
         QuoteFlag.STALE,
         QuoteFlag.FUTURE_TIMESTAMP,
@@ -49,6 +51,9 @@ def assess_quote(
 ) -> frozenset[QuoteFlag]:
     p = policy or QualityPolicy()
     flags: set[QuoteFlag] = set()
+    # An ask of zero is no offer at all, not a free option.
+    if quote.ask <= 0.0:
+        flags.add(QuoteFlag.NO_OFFER)
     if quote.bid > quote.ask:
         flags.add(QuoteFlag.CROSSED)
     elif quote.bid == quote.ask and quote.ask > 0.0:

@@ -28,7 +28,9 @@ def calendar_years(start: datetime, end: datetime) -> float:
     """ACT/365 year fraction between two aware instants. Non-negative; past expiries give 0."""
     require_aware("start", start)
     require_aware("end", end)
-    return max((end - start).total_seconds(), 0.0) / SECONDS_PER_YEAR
+    # Through timestamps: Python subtracts wall-clock time when both share a tzinfo, which is an
+    # hour wrong across a DST change and would give one instant two prices.
+    return max(end.timestamp() - start.timestamp(), 0.0) / SECONDS_PER_YEAR
 
 
 def us_expiry(settlement_date: date, am_settled: bool = False) -> datetime:
@@ -113,12 +115,12 @@ class VarianceClock:
         return total
 
     def _day_weighted(self, day: date, lo: datetime, hi: datetime) -> float:
-        seconds = (hi - lo).total_seconds()
+        seconds = hi.timestamp() - lo.timestamp()
         if not self.is_session_day(day):
             return seconds * self.closed_day_weight
         open_ = datetime.combine(day, time(9, 30), tzinfo=NEW_YORK)
         close = datetime.combine(day, time(16, 0), tzinfo=NEW_YORK)
-        in_session = max((min(hi, close) - max(lo, open_)).total_seconds(), 0.0)
+        in_session = max(min(hi, close).timestamp() - max(lo, open_).timestamp(), 0.0)
         return in_session * self.session_weight + (seconds - in_session) * self.overnight_weight
 
 

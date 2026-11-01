@@ -15,7 +15,7 @@ from greeks_neutralizer.hedging.problem import (
     HedgeConfig,
     HedgeProblem,
 )
-from greeks_neutralizer.pricing.book import Exposure, value_book
+from greeks_neutralizer.pricing.book import Exposure, linear_unit_exposure, value_book
 from greeks_neutralizer.risk.scenarios import Scenario
 
 
@@ -27,6 +27,13 @@ class Unhedged:
         self, day: DayMarket, book: Sequence[Position], hedges: Sequence[Position]
     ) -> Sequence[Position]:
         return ()
+
+
+def _unit_delta(day: DayMarket, instrument: LinearInstrument) -> float:
+    """Delta shares of one unit. For a future that includes the carry, so it is not its size."""
+    market = day.snapshot.market(instrument.underlying)
+    _, delta = linear_unit_exposure(instrument, market, day.as_of)
+    return instrument.multiplier * delta
 
 
 def _linear(day: DayMarket, underlying: str) -> LinearInstrument:
@@ -49,7 +56,7 @@ class DeltaDaily:
     ) -> Sequence[Position]:
         instrument = _linear(day, self.underlying)
         delta = _exposure(day, (*book, *hedges), self.underlying).delta_shares
-        unit = instrument.multiplier * instrument.delta_ratio
+        unit = _unit_delta(day, instrument)
         return (Position(instrument, -round(delta / unit)),)
 
 
@@ -77,7 +84,7 @@ class DeltaBand:
             return ()
         # Trade back to the edge of the band, the optimal rule under proportional costs.
         edge = band.half_width_shares if exposure.delta_shares > 0 else -band.half_width_shares
-        unit = instrument.multiplier * instrument.delta_ratio
+        unit = _unit_delta(day, instrument)
         return (Position(instrument, -round((exposure.delta_shares - edge) / unit)),)
 
 

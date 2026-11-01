@@ -141,7 +141,13 @@ def stability_report(
         )
     threshold = problem.config.instability_threshold
     regret_limit = problem.config.regret_threshold
-    if worst_change > threshold and worst_regret > regret_limit:
+    if not np.isfinite(worst_regret):
+        # However little the trade moves, a held hedge outside a hard limit is not stable.
+        notes.append(
+            "under a small input change this hedge is no longer feasible: it breaks a hard limit, "
+            "or its instruments are no longer usable"
+        )
+    elif worst_change > threshold and worst_regret > regret_limit:
         notes.append(
             f"a small input change moves the option trade by {worst_change:.0%} of its contracts, "
             f"and holding this hedge would give up {_percent(worst_regret)} of its benefit against "
@@ -231,6 +237,8 @@ class FrontierPoint:
     worst_scenario_pnl: float | None
     proposal: HedgeProposal | None
     infeasible_reason: str | None = None
+    status: str | None = None
+    issues: tuple[str, ...] = ()
 
 
 def _worst(values: dict[str, float] | None) -> float | None:
@@ -334,6 +342,8 @@ def _from_proposal(
         penalized_residual=_penalized_residual(problem.targets, dict(proposal.after)),
         worst_scenario_pnl=_worst(dict(proposal.scenario_pnl_after)),
         proposal=proposal,
+        status=proposal.status.value,
+        issues=tuple(proposal.issues),
     )
 
 

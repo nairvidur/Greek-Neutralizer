@@ -7,7 +7,12 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from greeks_neutralizer.examples import example_book, example_market, example_request
+from greeks_neutralizer.examples import (
+    DEFAULT_AS_OF,
+    example_book,
+    example_market,
+    example_request,
+)
 from greeks_neutralizer.service.app import _clean, _parse_tokens, create_app
 
 ALICE = {"Authorization": "Bearer a-token"}
@@ -16,13 +21,17 @@ BOB = {"Authorization": "Bearer b-token"}
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_app({"a-token": "alice", "b-token": "bob"}, tmp_path / "audit.jsonl", 200_000)
+    app = create_app(
+        {"a-token": "alice", "b-token": "bob"},
+        tmp_path / "audit.jsonl",
+        200_000,
+        clock=lambda: DEFAULT_AS_OF,
+    )
     return TestClient(app, raise_server_exceptions=False)
 
 
 def quick_request():
     request = example_request()
-    request["run_stability"] = False
     request["scenarios"] = "historical"
     return request
 
@@ -196,7 +205,7 @@ def test_unknown_proposal_is_a_conflict_not_a_crash(client):
 
 def test_broken_audit_chain_shows_in_health(tmp_path):
     path = tmp_path / "audit.jsonl"
-    app = create_app({"a-token": "alice"}, path)
+    app = create_app({"a-token": "alice"}, path, clock=lambda: DEFAULT_AS_OF)
     client = TestClient(app)
     client.post("/v1/proposals", headers=ALICE, json=quick_request())
     path.write_text(path.read_text().replace("alice", "mallory"))

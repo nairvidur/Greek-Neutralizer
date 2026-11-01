@@ -18,6 +18,8 @@ from greeks_neutralizer.domain import ExerciseStyle, OptionContract, Quote, Sett
 from greeks_neutralizer.errors import MarketDataError
 from greeks_neutralizer.time_model import NEW_YORK, us_expiry
 
+_MAX_REJECTED_SHARE = 0.05
+
 STANDARD_ROOTS: dict[str, frozenset[str]] = {
     "SPX": frozenset({"SPX", "SPXW"}),
     "NDX": frozenset({"NDX", "NDXP"}),
@@ -55,10 +57,12 @@ def _quote_time(data: Mapping[str, Any], fallback: datetime) -> datetime:
     """When these quotes were live: the latest trade in the payload (ET), not the fetch time.
 
     The payload `timestamp` is when it was generated. Outside market hours that can be days after
-    the quotes, which on a short expiry would badly misstate time to expiry and implied vol.
+    the quotes, which on a short expiry would badly misstate time to expiry and implied vol, so a
+    payload with no usable trade time fails closed.
     """
     stamps = [data.get("last_trade_time")]
-    stamps += [row.get("last_trade_time") for row in data.get("options", [])]
+    rows = data.get("options", [])
+    stamps += [row.get("last_trade_time") for row in rows if isinstance(row, Mapping)]
     parsed = []
     for stamp in stamps:
         if isinstance(stamp, str):
@@ -66,8 +70,9 @@ def _quote_time(data: Mapping[str, Any], fallback: datetime) -> datetime:
                 parsed.append(datetime.fromisoformat(stamp).replace(tzinfo=NEW_YORK))
             except ValueError:
                 continue
-    latest = max(parsed, default=fallback)
-    return min(latest, fallback)
+    if not parsed:
+        raise MarketDataError("Cboe payload has no usable quote time")
+    return min(max(parsed), fallback)
 
 
 def parse_cboe_delayed(payload: Mapping[str, Any]) -> ParsedChain:
@@ -92,7 +97,7 @@ def parse_cboe_delayed(payload: Mapping[str, Any]) -> ParsedChain:
     spot = _number(data, "current_price")
     if not math.isfinite(spot) or spot <= 0.0:
         bid, ask = _number(data, "bid"), _number(data, "ask")
-        if not (bid > 0.0 and ask > 0.0):
+        if not (bid > 0.0 and ask >= bid):
             raise MarketDataError("Cboe payload has no usable underlying price")
         spot = 0.5 * (bid + ask)
 
@@ -113,6 +118,7 @@ def parse_cboe_delayed(payload: Mapping[str, Any]) -> ParsedChain:
                 expiry=us_expiry(osi.expiry, am_settled=is_am_settled(osi.root)),
                 style=ExerciseStyle.EUROPEAN if european else ExerciseStyle.AMERICAN,
                 settlement=SettlementKind.CASH if european else SettlementKind.PHYSICAL,
+                exchange_symbol=osi.root,
             )
             quote = Quote(
                 bid=float(row["bid"]),
@@ -121,21 +127,25 @@ def parse_cboe_delayed(payload: Mapping[str, Any]) -> ParsedChain:
                 ask_size=int(row.get("ask_size") or 0),
                 timestamp=as_of,
             )
-        except Exception:
+            quotes.append(
+                ChainQuote(
+                    contract=contract,
+                    quote=quote,
+                    open_interest=int(row.get("open_interest") or 0),
+                    volume=int(row.get("volume") or 0),
+                    vendor_iv=_vendor_greek(row, "iv"),
+                    vendor_delta=_vendor_greek(row, "delta"),
+                    vendor_gamma=_vendor_greek(row, "gamma"),
+                )
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
             rejected += 1
             continue
-        quotes.append(
-            ChainQuote(
-                contract=contract,
-                quote=quote,
-                open_interest=int(row.get("open_interest") or 0),
-                volume=int(row.get("volume") or 0),
-                vendor_iv=_vendor_greek(row, "iv"),
-                vendor_delta=_vendor_greek(row, "delta"),
-                vendor_gamma=_vendor_greek(row, "gamma"),
-            )
-        )
     if not quotes:
         raise MarketDataError(f"Cboe payload has no parseable options ({rejected} rejected)")
+    if rejected > _MAX_REJECTED_SHARE * (len(quotes) + rejected):
+        raise MarketDataError(
+            f"Cboe payload rejected {rejected} of {len(quotes) + rejected} rows: format changed?"
+        )
     sizes_available = any(q.quote.bid_size > 0 or q.quote.ask_size > 0 for q in quotes)
     return ParsedChain(symbol, spot, as_of, tuple(quotes), rejected, non_standard, sizes_available)

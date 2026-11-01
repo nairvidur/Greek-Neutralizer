@@ -1,0 +1,846 @@
+{
+  "warning": "Spot, VIX, and rates are real. Option prices and spreads are modeled.",
+  "code_version": "2.0.0a1",
+  "history": [
+    "2016-10-31",
+    "2026-10-29",
+    2513
+  ],
+  "n_variants": 16,
+  "groups": [
+    {
+      "book": "long_put_overlay",
+      "spread_multiple": 1.0,
+      "stats": [
+        {
+          "policy": "delta_daily",
+          "days": 2260,
+          "total_pnl": 1796193.4106770654,
+          "daily_stdev": 48356.39553381535,
+          "worst_day": -352752.60690524854,
+          "es_975": 101000.70692854266,
+          "max_drawdown": 1783634.9464994103,
+          "hedge_cost": 129755.61896349974,
+          "book_cost": 517727.06926990725,
+          "hedge_lots": 617070,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv",
+          "days": 2260,
+          "total_pnl": 3963062.0604385305,
+          "daily_stdev": 17388.334960318447,
+          "worst_day": -96861.31075324253,
+          "es_975": 24363.812175734314,
+          "max_drawdown": 379952.32792566856,
+          "hedge_cost": 1063486.7586051372,
+          "book_cost": 517727.06926990725,
+          "hedge_lots": 226879,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "days": 2260,
+          "total_pnl": 2978256.090506358,
+          "daily_stdev": 22670.127184613342,
+          "worst_day": -487936.8435542755,
+          "es_975": 39510.6178098794,
+          "max_drawdown": 567467.854123286,
+          "hedge_cost": 863922.155030868,
+          "book_cost": 517727.06926990725,
+          "hedge_lots": 184844,
+          "failed_days": 0
+        },
+        {
+          "policy": "unhedged",
+          "days": 2260,
+          "total_pnl": 35099310.24032414,
+          "daily_stdev": 399949.61867059214,
+          "worst_day": -2582603.78918127,
+          "es_975": 1119982.8131324016,
+          "max_drawdown": 11352720.962037733,
+          "hedge_cost": 0.0,
+          "book_cost": 517727.06926990725,
+          "hedge_lots": 0,
+          "failed_days": 0
+        }
+      ],
+      "comparisons": [
+        {
+          "policy": "delta_daily",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9853816866002021,
+          "variance_reduction_ci": [
+            0.9762612180191076,
+            0.9924549658938496
+          ],
+          "es_improvement": 1018982.1062038589,
+          "es_improvement_ci": [
+            871674.7065233879,
+            1225464.8622639715
+          ],
+          "mean_pnl_difference_per_day": -14735.892402498705,
+          "mean_pnl_difference_ci": [
+            -30858.859517091936,
+            1710.7291572303143
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9981098101742787,
+          "variance_reduction_ci": [
+            0.996461247743178,
+            0.9993027299253991
+          ],
+          "es_improvement": 1095619.0009566674,
+          "es_improvement_ci": [
+            945961.4052568292,
+            1303101.2322924251
+          ],
+          "mean_pnl_difference_per_day": -13777.100964551155,
+          "mean_pnl_difference_ci": [
+            -29442.25355112263,
+            1799.0088478445493
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9967870990338197,
+          "variance_reduction_ci": [
+            0.9934589685628138,
+            0.9993260872969734
+          ],
+          "es_improvement": 1080472.1953225222,
+          "es_improvement_ci": [
+            940636.7861866427,
+            1266848.5616938933
+          ],
+          "mean_pnl_difference_per_day": -14212.855818503442,
+          "mean_pnl_difference_ci": [
+            -29703.50020479478,
+            1205.869358381067
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.8706971335183292,
+          "variance_reduction_ci": [
+            0.834410811138498,
+            0.9250856400015924
+          ],
+          "es_improvement": 76636.89475280834,
+          "es_improvement_ci": [
+            59206.16325781411,
+            94590.60525564001
+          ],
+          "mean_pnl_difference_per_day": 958.791437947551,
+          "mean_pnl_difference_ci": [
+            -740.8059114373796,
+            2313.735329555614
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.7802139769267268,
+          "variance_reduction_ci": [
+            0.6708539295593304,
+            0.9319340806633208
+          ],
+          "es_improvement": 61490.08911866326,
+          "es_improvement_ci": [
+            36993.90037031141,
+            83581.7322089365
+          ],
+          "mean_pnl_difference_per_day": 523.0365839952624,
+          "mean_pnl_difference_ci": [
+            -1443.2701243604386,
+            2203.446140283921
+          ]
+        },
+        {
+          "policy": "unhedged",
+          "baseline": "delta_daily",
+          "variance_reduction": -67.40734444876662,
+          "variance_reduction_ci": [
+            -131.5375200782513,
+            -41.12516063766098
+          ],
+          "es_improvement": -1018982.1062038589,
+          "es_improvement_ci": [
+            -1225464.8622639717,
+            -871674.706523388
+          ],
+          "mean_pnl_difference_per_day": 14735.892402498705,
+          "mean_pnl_difference_ci": [
+            -1710.7291572303204,
+            30858.859517091914
+          ]
+        }
+      ],
+      "stress_days": [
+        {
+          "day": "2018-02-05",
+          "pnl": {
+            "unhedged": -632970.3740359017,
+            "delta_daily": 395251.5620827275,
+            "opt_dgv_cheap": 179373.64590423898,
+            "opt_dgv": 181160.15852505498
+          }
+        },
+        {
+          "day": "2020-03-16",
+          "pnl": {
+            "unhedged": -1756576.803191388,
+            "delta_daily": 852538.6328936116,
+            "opt_dgv_cheap": 573494.1488878727,
+            "opt_dgv": 375267.4790817969
+          }
+        },
+        {
+          "day": "2024-08-05",
+          "pnl": {
+            "unhedged": -437373.73944903427,
+            "delta_daily": 537788.2182756354,
+            "opt_dgv_cheap": 79184.51962100138,
+            "opt_dgv": 65873.40628107722
+          }
+        }
+      ],
+      "first_failures": {}
+    },
+    {
+      "book": "short_strangle",
+      "spread_multiple": 1.0,
+      "stats": [
+        {
+          "policy": "delta_band",
+          "days": 2260,
+          "total_pnl": 1072607.1694866363,
+          "daily_stdev": 9846.685252247762,
+          "worst_day": -132068.66988986442,
+          "es_975": 40001.953954878314,
+          "max_drawdown": 357701.2597189798,
+          "hedge_cost": 10995.100194499812,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 52045,
+          "failed_days": 0
+        },
+        {
+          "policy": "delta_daily",
+          "days": 2260,
+          "total_pnl": 843635.730446,
+          "daily_stdev": 8628.454199978125,
+          "worst_day": -121703.18735154295,
+          "es_975": 35749.65370657351,
+          "max_drawdown": 375506.4195581732,
+          "hedge_cost": 32487.15719199965,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 151544,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dg",
+          "days": 2260,
+          "total_pnl": -524542.6477133132,
+          "daily_stdev": 5036.5475349294275,
+          "worst_day": -65191.94281456837,
+          "es_975": 19582.49290819767,
+          "max_drawdown": 524730.9529936425,
+          "hedge_cost": 167970.1873413284,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 62885,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv",
+          "days": 2260,
+          "total_pnl": -645324.3005425476,
+          "daily_stdev": 2263.1705971914876,
+          "worst_day": -33079.55610044512,
+          "es_975": 8105.363043214857,
+          "max_drawdown": 645610.2678627449,
+          "hedge_cost": 263736.2050773046,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 69912,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "days": 2260,
+          "total_pnl": -534873.0671948715,
+          "daily_stdev": 2385.169640430975,
+          "worst_day": -42125.39315041531,
+          "es_975": 7964.71105350062,
+          "max_drawdown": 542258.823460387,
+          "hedge_cost": 198965.87726581004,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 71630,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv_cvar",
+          "days": 2260,
+          "total_pnl": -10032095333771.666,
+          "daily_stdev": 232712876049.16278,
+          "worst_day": -2383939937388.0376,
+          "es_975": 693277844707.1794,
+          "max_drawdown": 14286664382425.262,
+          "hedge_cost": 418495589449.9571,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 11652000000,
+          "failed_days": 318
+        },
+        {
+          "policy": "unhedged",
+          "days": 2260,
+          "total_pnl": 1533817.8215659466,
+          "daily_stdev": 17980.81944014804,
+          "worst_day": -214903.21783374055,
+          "es_975": 68222.90248647843,
+          "max_drawdown": 596184.1912969503,
+          "hedge_cost": 0.0,
+          "book_cost": 110952.84099521702,
+          "hedge_lots": 0,
+          "failed_days": 0
+        }
+      ],
+      "comparisons": [
+        {
+          "policy": "delta_band",
+          "baseline": "unhedged",
+          "variance_reduction": 0.7001105746174038,
+          "variance_reduction_ci": [
+            0.5545048990284849,
+            0.7817673117230711
+          ],
+          "es_improvement": 28220.948531600116,
+          "es_improvement_ci": [
+            14090.067119617195,
+            45668.81935586681
+          ],
+          "mean_pnl_difference_per_day": -204.0755097696063,
+          "mean_pnl_difference_ci": [
+            -572.3326248306313,
+            196.40864043417025
+          ]
+        },
+        {
+          "policy": "delta_daily",
+          "baseline": "unhedged",
+          "variance_reduction": 0.7697248698231054,
+          "variance_reduction_ci": [
+            0.6681069850043926,
+            0.827975943372418
+          ],
+          "es_improvement": 32473.24877990492,
+          "es_improvement_ci": [
+            18062.523140840523,
+            50200.357218451274
+          ],
+          "mean_pnl_difference_per_day": -305.39030580528606,
+          "mean_pnl_difference_ci": [
+            -722.6204067002035,
+            112.00919562179246
+          ]
+        },
+        {
+          "policy": "opt_dg",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9215402510013534,
+          "variance_reduction_ci": [
+            0.8779619171516277,
+            0.9462414265948802
+          ],
+          "es_improvement": 48640.409578280756,
+          "es_improvement_ci": [
+            30142.90174509737,
+            69806.7601451458
+          ],
+          "mean_pnl_difference_per_day": -910.7789687076371,
+          "mean_pnl_difference_ci": [
+            -1455.0060826691317,
+            -303.4468127156381
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9841577951585331,
+          "variance_reduction_ci": [
+            0.9729013188377872,
+            0.9903396907401685
+          ],
+          "es_improvement": 60117.53944326357,
+          "es_improvement_ci": [
+            40750.160302443954,
+            83433.59579173701
+          ],
+          "mean_pnl_difference_per_day": -964.2221779241124,
+          "mean_pnl_difference_ci": [
+            -1478.7924766286512,
+            -367.7160595411721
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9824037717951045,
+          "variance_reduction_ci": [
+            0.9729235976076364,
+            0.9889917747498354
+          ],
+          "es_improvement": 60258.19143297781,
+          "es_improvement_ci": [
+            40921.565350677476,
+            82980.02432223159
+          ],
+          "mean_pnl_difference_per_day": -915.349950779123,
+          "mean_pnl_difference_ci": [
+            -1445.9272908580378,
+            -322.09925013658045
+          ]
+        },
+        {
+          "policy": "opt_dgv_cvar",
+          "baseline": "unhedged",
+          "variance_reduction": -167502721329732.03,
+          "variance_reduction_ci": [
+            -205905725173710.8,
+            -127348405277123.64
+          ],
+          "es_improvement": -693277776484.277,
+          "es_improvement_ci": [
+            -896781489115.1714,
+            -528968361590.69116
+          ],
+          "mean_pnl_difference_per_day": -4438980914.862605,
+          "mean_pnl_difference_ci": [
+            -12112080322.094397,
+            4932941103.756558
+          ]
+        },
+        {
+          "policy": "delta_band",
+          "baseline": "delta_daily",
+          "variance_reduction": -0.30230922094029355,
+          "variance_reduction_ci": [
+            -0.4254366773630127,
+            -0.19453585593776102
+          ],
+          "es_improvement": -4252.300248304804,
+          "es_improvement_ci": [
+            -6696.225159724319,
+            -1767.8549065844234
+          ],
+          "mean_pnl_difference_per_day": 101.31479603567976,
+          "mean_pnl_difference_ci": [
+            -38.29588000214134,
+            233.0054253123996
+          ]
+        },
+        {
+          "policy": "opt_dg",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.6592782340916504,
+          "variance_reduction_ci": [
+            0.5906678393732198,
+            0.7245786861414265
+          ],
+          "es_improvement": 16167.16079837584,
+          "es_improvement_ci": [
+            10912.774446564099,
+            21699.84140536499
+          ],
+          "mean_pnl_difference_per_day": -605.388662902351,
+          "mean_pnl_difference_ci": [
+            -891.3155507087356,
+            -295.74867937561396
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.9312031445632138,
+          "variance_reduction_ci": [
+            0.9091150528805364,
+            0.9498307240386208
+          ],
+          "es_improvement": 27644.290663358654,
+          "es_improvement_ci": [
+            20743.156490403027,
+            35486.520060874245
+          ],
+          "mean_pnl_difference_per_day": -658.8318721188264,
+          "mean_pnl_difference_ci": [
+            -939.9780912710661,
+            -347.01579892141376
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.9235860677122265,
+          "variance_reduction_ci": [
+            0.9016695109069003,
+            0.9495134710229134
+          ],
+          "es_improvement": 27784.94265307289,
+          "es_improvement_ci": [
+            20888.26270328567,
+            35385.254082734406
+          ],
+          "mean_pnl_difference_per_day": -609.9596449738369,
+          "mean_pnl_difference_ci": [
+            -913.1553036444418,
+            -266.140727816345
+          ]
+        },
+        {
+          "policy": "opt_dgv_cvar",
+          "baseline": "delta_daily",
+          "variance_reduction": -727402569270330.0,
+          "variance_reduction_ci": [
+            -971109617566095.6,
+            -464209760580105.2
+          ],
+          "es_improvement": -693277808957.5258,
+          "es_improvement_ci": [
+            -896781526434.4369,
+            -528968379872.28265
+          ],
+          "mean_pnl_difference_per_day": -4438980609.472299,
+          "mean_pnl_difference_ci": [
+            -12112079923.778511,
+            4932941625.192194
+          ]
+        },
+        {
+          "policy": "unhedged",
+          "baseline": "delta_daily",
+          "variance_reduction": -3.342631352468728,
+          "variance_reduction_ci": [
+            -4.813141452654683,
+            -2.013019124340077
+          ],
+          "es_improvement": -32473.24877990492,
+          "es_improvement_ci": [
+            -50200.3572184513,
+            -18062.52314084053
+          ],
+          "mean_pnl_difference_per_day": 305.39030580528606,
+          "mean_pnl_difference_ci": [
+            -112.0091956217925,
+            722.6204067002035
+          ]
+        }
+      ],
+      "stress_days": [
+        {
+          "day": "2018-02-05",
+          "pnl": {
+            "unhedged": -65012.6665519468,
+            "delta_band": -87417.61487921805,
+            "delta_daily": -65516.4888762975,
+            "opt_dgv_cvar": 830500026957.2451,
+            "opt_dg": -32798.55957493461,
+            "opt_dgv_cheap": 10155.046677089007,
+            "opt_dgv": -6110.426369133214
+          }
+        },
+        {
+          "day": "2020-03-16",
+          "pnl": {
+            "unhedged": -190887.6831247594,
+            "delta_band": -98938.62727773476,
+            "delta_daily": -121703.18735154295,
+            "opt_dgv_cvar": 3467746166564.3833,
+            "opt_dg": -65191.94281456837,
+            "opt_dgv_cheap": -42125.39315041531,
+            "opt_dgv": -24723.681549285597
+          }
+        },
+        {
+          "day": "2024-08-05",
+          "pnl": {
+            "unhedged": -141567.10213969176,
+            "delta_band": -68289.17072239863,
+            "delta_daily": -49452.61301535189,
+            "opt_dgv_cvar": 1203469429653.945,
+            "opt_dg": 3933.2827595804324,
+            "opt_dgv_cheap": -3027.4522910332903,
+            "opt_dgv": 11034.1211985882
+          }
+        }
+      ],
+      "first_failures": {
+        "opt_dgv_cvar": [
+          "2016-11-10: HedgeInfeasibleError: the continuous hedge is feasible but no integer lots are: widen a band by about one contract's exposure",
+          "2016-11-14: HedgeInfeasibleError: the continuous hedge is feasible but no integer lots are: widen a band by about one contract's exposure",
+          "2016-11-21: HedgeInfeasibleError: the continuous hedge is feasible but no integer lots are: widen a band by about one contract's exposure"
+        ]
+      }
+    },
+    {
+      "book": "short_strangle",
+      "spread_multiple": 3.0,
+      "stats": [
+        {
+          "policy": "delta_band",
+          "days": 2260,
+          "total_pnl": 832627.9155250528,
+          "daily_stdev": 9874.531434521865,
+          "worst_day": -132068.66988986442,
+          "es_975": 40280.142064495245,
+          "max_drawdown": 377973.2450946217,
+          "hedge_cost": 32985.30058350015,
+          "book_cost": 328941.8945678003,
+          "hedge_lots": 52045,
+          "failed_days": 0
+        },
+        {
+          "policy": "delta_daily",
+          "days": 2260,
+          "total_pnl": 560672.3624894168,
+          "daily_stdev": 8645.653258674221,
+          "worst_day": -121763.91419954298,
+          "es_975": 36038.883794117144,
+          "max_drawdown": 408104.9238202533,
+          "hedge_cost": 97461.47157599959,
+          "book_cost": 328941.8945678003,
+          "hedge_lots": 151544,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv",
+          "days": 2260,
+          "total_pnl": -1241050.6868519373,
+          "daily_stdev": 2407.162145976749,
+          "worst_day": -33055.34138026893,
+          "es_975": 9409.705191700004,
+          "max_drawdown": 1241236.5948148924,
+          "hedge_cost": 679933.125719603,
+          "book_cost": 328941.8945678003,
+          "hedge_lots": 72700,
+          "failed_days": 0
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "days": 2260,
+          "total_pnl": -931004.5370692677,
+          "daily_stdev": 4212.154936518239,
+          "worst_day": -120952.62598968686,
+          "es_975": 12315.575843232376,
+          "max_drawdown": 931202.7621129166,
+          "hedge_cost": 419961.7387406788,
+          "book_cost": 328941.8945678003,
+          "hedge_lots": 69155,
+          "failed_days": 0
+        },
+        {
+          "policy": "unhedged",
+          "days": 2260,
+          "total_pnl": 1315828.7679933633,
+          "daily_stdev": 17987.703510518277,
+          "worst_day": -214903.21783374055,
+          "es_975": 68380.52104415974,
+          "max_drawdown": 604590.7755016272,
+          "hedge_cost": 0.0,
+          "book_cost": 328941.8945678003,
+          "hedge_lots": 0,
+          "failed_days": 0
+        }
+      ],
+      "comparisons": [
+        {
+          "policy": "delta_band",
+          "baseline": "unhedged",
+          "variance_reduction": 0.6986428136974357,
+          "variance_reduction_ci": [
+            0.5518708923355711,
+            0.780400112225867
+          ],
+          "es_improvement": 28100.3789796645,
+          "es_improvement_ci": [
+            14036.048156571076,
+            45192.26335948697
+          ],
+          "mean_pnl_difference_per_day": -213.80568693288075,
+          "mean_pnl_difference_ci": [
+            -581.4561639339724,
+            185.83570748752524
+          ]
+        },
+        {
+          "policy": "delta_daily",
+          "baseline": "unhedged",
+          "variance_reduction": 0.76898286873865,
+          "variance_reduction_ci": [
+            0.6683448180931639,
+            0.8269084066353659
+          ],
+          "es_improvement": 32341.6372500426,
+          "es_improvement_ci": [
+            18030.505124294767,
+            49566.52393439379
+          ],
+          "mean_pnl_difference_per_day": -334.1400024353745,
+          "mean_pnl_difference_ci": [
+            -751.4831795973611,
+            81.7024233056536
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "unhedged",
+          "variance_reduction": 0.982091498424575,
+          "variance_reduction_ci": [
+            0.9717690857551007,
+            0.9875046543837461
+          ],
+          "es_improvement": 58970.81585245974,
+          "es_improvement_ci": [
+            38957.63535905408,
+            82025.09823251417
+          ],
+          "mean_pnl_difference_per_day": -1131.3625906395137,
+          "mean_pnl_difference_ci": [
+            -1654.855648623928,
+            -547.5423826571364
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "unhedged",
+          "variance_reduction": 0.9451650774947045,
+          "variance_reduction_ci": [
+            0.906480209106347,
+            0.9845627132683283
+          ],
+          "es_improvement": 56064.94520092737,
+          "es_improvement_ci": [
+            39836.90498081614,
+            73461.56087240181
+          ],
+          "mean_pnl_difference_per_day": -994.1740287887748,
+          "mean_pnl_difference_ci": [
+            -1540.2314554027553,
+            -434.9130439235622
+          ]
+        },
+        {
+          "policy": "delta_band",
+          "baseline": "delta_daily",
+          "variance_reduction": -0.30447982215500047,
+          "variance_reduction_ci": [
+            -0.4292273007960968,
+            -0.19409511724084944
+          ],
+          "es_improvement": -4241.258270378101,
+          "es_improvement_ci": [
+            -6606.804314549706,
+            -1798.0336790725232
+          ],
+          "mean_pnl_difference_per_day": 120.33431550249381,
+          "mean_pnl_difference_ci": [
+            -19.57073686323647,
+            252.63849592550747
+          ]
+        },
+        {
+          "policy": "opt_dgv",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.9224797681555263,
+          "variance_reduction_ci": [
+            0.9013815128912878,
+            0.9390136621643114
+          ],
+          "es_improvement": 26629.178602417138,
+          "es_improvement_ci": [
+            19333.57260552941,
+            35076.731156892434
+          ],
+          "mean_pnl_difference_per_day": -797.222588204139,
+          "mean_pnl_difference_ci": [
+            -1098.8674451234785,
+            -471.23043535699554
+          ]
+        },
+        {
+          "policy": "opt_dgv_cheap",
+          "baseline": "delta_daily",
+          "variance_reduction": 0.7626369862447094,
+          "variance_reduction_ci": [
+            0.5406590686816765,
+            0.9399804442011949
+          ],
+          "es_improvement": 23723.307950884766,
+          "es_improvement_ci": [
+            17784.91654436171,
+            29418.128001216268
+          ],
+          "mean_pnl_difference_per_day": -660.0340263534002,
+          "mean_pnl_difference_ci": [
+            -927.7793396293143,
+            -390.82252092808875
+          ]
+        },
+        {
+          "policy": "unhedged",
+          "baseline": "delta_daily",
+          "variance_reduction": -3.328683308203228,
+          "variance_reduction_ci": [
+            -4.777289272215355,
+            -2.015180340784727
+          ],
+          "es_improvement": -32341.6372500426,
+          "es_improvement_ci": [
+            -49566.523934393816,
+            -18030.505124294777
+          ],
+          "mean_pnl_difference_per_day": 334.1400024353745,
+          "mean_pnl_difference_ci": [
+            -81.70242330565365,
+            751.483179597361
+          ]
+        }
+      ],
+      "stress_days": [
+        {
+          "day": "2018-02-05",
+          "pnl": {
+            "unhedged": -65012.6665519468,
+            "delta_daily": -65615.92555629754,
+            "delta_band": -87498.26907521808,
+            "opt_dgv_cheap": -5945.7506381936255,
+            "opt_dgv": 3877.3163812589655
+          }
+        },
+        {
+          "day": "2020-03-16",
+          "pnl": {
+            "unhedged": -190887.6831247594,
+            "delta_daily": -121763.91419954298,
+            "delta_band": -98963.56866173478,
+            "opt_dgv_cheap": -120952.62598968686,
+            "opt_dgv": -33055.34138026893
+          }
+        },
+        {
+          "day": "2024-08-05",
+          "pnl": {
+            "unhedged": -141567.10213969176,
+            "delta_daily": -49560.613527351845,
+            "delta_band": -68357.6066903986,
+            "opt_dgv_cheap": -1396.7180521815835,
+            "opt_dgv": -13326.309290037923
+          }
+        }
+      ],
+      "first_failures": {}
+    }
+  ]
+}

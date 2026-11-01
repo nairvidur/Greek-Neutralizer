@@ -144,6 +144,12 @@ def _cmd_stress(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _no_legs_text(status: str) -> str:
+    if status == "no_usable_candidates":
+        return "0 legs: every candidate was excluded, so this does not mean no hedge is needed"
+    return "0 legs: no trade improves the objective"
+
+
 def _hedge_summary(proposal: Any, full: bool) -> dict[str, Any]:
     from greeks_neutralizer.schema import proposal_to_json
 
@@ -162,7 +168,7 @@ def _hedge_summary(proposal: Any, full: bool) -> dict[str, Any]:
     worst_after = min(data["scenario_pnl_after"].values(), default=None)
     out: dict[str, Any] = {
         "status": data["status"],
-        "legs": legs if legs else "0 legs: no trade improves the objective",
+        "legs": legs if legs else _no_legs_text(data["status"]),
         "transaction_cost": data["transaction_cost"],
         "net_premium": data["net_premium"],
         "objective": data["objective"],
@@ -215,6 +221,9 @@ def _cmd_frontier(args: argparse.Namespace) -> dict[str, Any]:
                 "legs": p.n_legs,
                 "residual": p.penalized_residual,
                 "worst_stress": p.worst_scenario_pnl,
+                "status": p.status or ("infeasible" if p.infeasible_reason else "baseline"),
+                "reason": p.infeasible_reason or "",
+                "issues": len(p.issues),
             }
             for p in hedge_frontier(problem, snapshot)
         ]

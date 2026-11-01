@@ -16,6 +16,9 @@ Reporting units (`Exposure`), all for the whole position:
   vanna_1pt       change in delta_shares per +1 vol point
   volga_1pt       change in vega_1pt per +1 vol point
   charm_1d        change in delta_shares per calendar day
+
+An American option's theta rolls time without crossing an ex-date, so a dividend is never reported
+as decay.
 """
 
 from __future__ import annotations
@@ -59,6 +62,9 @@ EXPOSURE_NAMES: tuple[str, ...] = (
     "volga_1pt",
     "charm_1d",
 )
+
+
+MAX_PLAUSIBLE_VOL = 10.0
 
 
 class SmileRegime(StrEnum):
@@ -147,6 +153,11 @@ def _smile(
     vol = np.asarray(market.surface.vol(k, tau), dtype=np.float64)
     if not np.all(np.isfinite(vol)) or np.any(vol < 0.0):
         raise MarketDataError(f"{market.symbol}: vol surface returned NaN or a negative vol")
+    if np.any(vol > MAX_PLAUSIBLE_VOL):
+        raise MarketDataError(
+            f"{market.symbol}: vol of {float(np.max(vol)):.2f} is implausible. Vols are decimals, "
+            "so 25% is 0.25"
+        )
     h = 1e-4
     up = market.surface.vol(k + h, tau)
     dn = market.surface.vol(k - h, tau)
@@ -242,6 +253,14 @@ def _value_group(
     greeks = black_greeks(market.spot - pv_div, strikes, T, r, q, vol, omega, tau=tau)
     premium = np.zeros_like(T)
 
+    # The kernel holds the escrowed spot fixed, but PV(dividends) moves with time and rates.
+    if np.any(pv_div > 0.0):
+        weighted = np.array(
+            [market.pv_dividends_time_weighted(as_of, c.expiry) for c in group], dtype=np.float64
+        )
+        greeks.theta[:] -= greeks.delta * r * pv_div
+        greeks.rho[:] += greeks.delta * weighted
+
     is_american = np.array([c.style is ExerciseStyle.AMERICAN for c in group], dtype=bool)
     needs_tree = (
         is_american & live & (vol > 0.0) & exercise_is_ever_optimal(omega, r, q, pv_div > 0.0)
@@ -250,9 +269,31 @@ def _value_group(
         sel = np.flatnonzero(needs_tree)
         batch = _american_batch(market, as_of, group, sel, T, tau, r, q, vol, strikes, omega)
         am = american_greeks(batch, steps=tree_steps)
-        for name in ("price", "delta", "gamma", "vega", "theta", "rho", "phi", "vanna", "volga"):
+        names = (
+            "price",
+            "delta",
+            "gamma",
+            "vega",
+            "theta",
+            "rho",
+            "phi",
+            "vanna",
+            "volga",
+            "charm",
+        )
+        for name in names:
             getattr(greeks, name)[sel] = getattr(am, name)
         premium[sel] = am.exercise_premium
+
+    # An American option is worth at least immediate exercise, including at zero vol, where no tree
+    # runs and the European value on the forward can be below it.
+    intrinsic = np.maximum(omega * (market.spot - strikes), 0.0)
+    floored = np.flatnonzero(is_american & live & (greeks.price < intrinsic))
+    if floored.size:
+        for name in GREEK_NAMES:
+            getattr(greeks, name)[floored] = 0.0
+        greeks.price[floored] = intrinsic[floored]
+        greeks.delta[floored] = omega[floored]
 
     # Expired contracts report intrinsic at spot, not at the escrowed forward, with zero risk.
     if np.any(~live):
@@ -293,8 +334,12 @@ def _american_batch(
     for row, i in enumerate(sel):
         for col, d in enumerate(divs):
             if d.ex_date <= group[int(i)].expiry:
-                div_times[row, col] = calendar_years(as_of, d.ex_date)
-                div_amounts[row, col] = d.amount
+                t = calendar_years(as_of, d.ex_date)
+                div_times[row, col] = t
+                # The tree discounts at one flat rate, so restate the amount to give this
+                # dividend's PV on the curve, which is what the European control variate uses.
+                on_curve = float(market.curve.discount(t))
+                div_amounts[row, col] = d.amount * on_curve * np.exp(r[int(i)] * t)
     return AmericanBatch(
         spot=np.full(sel.size, market.spot, dtype=np.float64),
         strike=strikes[sel],
@@ -312,12 +357,33 @@ def _american_batch(
 def linear_unit_exposure(
     instrument: LinearInstrument, market: UnderlyingMarket, as_of: datetime
 ) -> tuple[float, float]:
-    """(unit price, spot delta per unit before multiplier) for a delta-one instrument."""
+    """(unit price, spot delta per unit before multiplier) for a delta-one instrument.
+
+    A future's delta is dF/dS = exp(-q T) / D, which is not F/S once dividends are in the forward.
+    An expired future has settled, and has no delta left.
+    """
     if instrument.kind is LinearKind.FUTURE:
         assert instrument.expiry is not None
-        forward = market.forward(as_of, instrument.expiry)
-        return forward, forward / market.spot
+        if instrument.expiry <= as_of:
+            return market.spot, 0.0
+        T = calendar_years(as_of, instrument.expiry)
+        delta = float(np.exp(-market.carry_yield * T) / market.curve.discount(T))
+        return market.forward(as_of, instrument.expiry), delta
     return market.spot * instrument.delta_ratio, instrument.delta_ratio
+
+
+def is_expired_instrument(instrument: Instrument, as_of: datetime) -> bool:
+    expiry = instrument.expiry
+    return expiry is not None and expiry <= as_of
+
+
+def mark_value(position: Position, unit_price: float, exposure_value: float) -> float:
+    """What a position is marked at. A future's value at inception is zero, but its mark moves with
+    its price, so P&L has to be measured on price."""
+    instrument = position.instrument
+    if isinstance(instrument, LinearInstrument) and instrument.kind is LinearKind.FUTURE:
+        return position.quantity * instrument.multiplier * unit_price
+    return exposure_value
 
 
 def value_book(positions: Sequence[Position], snapshot: MarketSnapshot) -> BookValuation:
@@ -352,6 +418,11 @@ def value_book(positions: Sequence[Position], snapshot: MarketSnapshot) -> BookV
         else:
             underlying = instrument.underlying
             line = _linear_line(position, instrument, snapshot)
+            if is_expired_instrument(instrument, snapshot.as_of):
+                issues.append(
+                    f"EXPIRED {instrument.describe()} qty {position.quantity}: "
+                    "has settled and carries no risk; remove it"
+                )
         lines.append(line)
         by_underlying[underlying] = by_underlying.get(underlying, Exposure()) + line.exposure
 
@@ -427,8 +498,22 @@ def _linear_line(
     price, unit_delta = linear_unit_exposure(instrument, market, snapshot.as_of)
     size = position.quantity * instrument.multiplier
     delta_shares = size * unit_delta
-    # A future has zero value at inception; report the notional-free mark as zero value.
-    value = 0.0 if instrument.kind is LinearKind.FUTURE else size * price
+    # A future has zero value at inception, so report no notional as value.
+    is_future = instrument.kind is LinearKind.FUTURE
+    value = 0.0 if is_future else size * price
+    rho_1pct = theta_1d = charm_1d = 0.0
+    if is_future and unit_delta != 0.0:
+        assert instrument.expiry is not None
+        as_of = snapshot.as_of
+        T = calendar_years(as_of, instrument.expiry)
+        r = float(market.curve.zero_rate(np.array([T]))[0])
+        carry = r - market.carry_yield
+        pv = market.pv_dividends(as_of, instrument.expiry)
+        weighted = market.pv_dividends_time_weighted(as_of, instrument.expiry)
+        growth = float(np.exp(carry * T))
+        rho_1pct = size * (T * price + growth * weighted) * 0.01
+        theta_1d = size * (-carry * price - growth * r * pv) / 365.0
+        charm_1d = delta_shares * -carry / 365.0
     return PositionValuation(
         position=position,
         unit_price=price,
@@ -437,6 +522,9 @@ def _linear_line(
             value=value,
             delta_shares=delta_shares,
             delta_dollars=delta_shares * market.spot,
+            rho_1pct=rho_1pct,
+            theta_1d=theta_1d,
+            charm_1d=charm_1d,
         ),
     )
 

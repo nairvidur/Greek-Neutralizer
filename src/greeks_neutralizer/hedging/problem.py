@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from greeks_neutralizer.data.quality import QualityPolicy
-from greeks_neutralizer.domain import Instrument, Position, Quote
+from greeks_neutralizer.domain import Instrument, Position, Quote, require_finite
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.pricing.book import EXPOSURE_NAMES, Exposure
 from greeks_neutralizer.risk.scenarios import Scenario
@@ -29,9 +29,10 @@ from greeks_neutralizer.risk.scenarios import Scenario
 class HedgeCandidate:
     """A tradable hedge with a live market. Marks and costs come from `quote`, never from a model.
 
-    Size is in two tiers. Up to displayed size trades at the touch. Beyond it, up to `max_buy` or
-    `max_sell`, it pays `impact_per_unit` in dollars per contract more, which keeps the problem
-    linear and makes the solver work through liquidity in cost order.
+    By default a hedge is limited to the displayed size, because size past the quote is not free.
+    Setting `max_buy` or `max_sell` above it allows depth: past the displayed size, each unit pays
+    `impact_per_unit` more in dollars, which keeps the problem linear and makes the solver work
+    through liquidity in cost order. A proposal that uses depth carries an OVER_DISPLAYED issue.
     """
 
     instrument: Instrument
@@ -41,9 +42,10 @@ class HedgeCandidate:
     max_sell: int | None = None
     impact_per_unit: float = 0.0
     lot_size: int = 1
-    displayed_only: bool = False
 
     def __post_init__(self) -> None:
+        require_finite("fee_per_unit", self.fee_per_unit)
+        require_finite("impact_per_unit", self.impact_per_unit)
         if self.fee_per_unit < 0.0 or self.impact_per_unit < 0.0:
             raise ValidationError("fees and impact must be non-negative")
         if self.lot_size < 1:
@@ -68,7 +70,8 @@ class GreekName(StrEnum):
 # Greek means about the same thing to the solver.
 DEFAULT_WEIGHTS: Mapping[GreekName, float] = {
     GreekName.DELTA: 0.01,  # 1% spot move
-    GreekName.GAMMA: 0.5 * 0.01 * 3.0,  # second-order P&L on a 3% move, in units of gamma per 1%
+    # P&L on a 3% move is 0.5 * gamma_shares * (0.03 S)^2, which is 0.045 per unit of gamma_1pct.
+    GreekName.GAMMA: 0.5 * 0.03**2 / 0.01,
     GreekName.VEGA: 2.0,  # 2 vol points
     GreekName.THETA: 1.0,
     GreekName.RHO: 0.25,
@@ -120,8 +123,29 @@ class HedgeConfig:
     allow_extrapolated_vol: bool = False
     instability_threshold: float = 0.5
     regret_threshold: float = 0.1
+    max_lots_per_leg: int = 5000
+    max_model_quote_vol_gap: float = 0.05
 
     def __post_init__(self) -> None:
+        for name in (
+            "risk_aversion",
+            "cvar_weight",
+            "cvar_alpha",
+            "ticket_cost",
+            "mip_gap",
+            "time_limit_seconds",
+            "instability_threshold",
+            "regret_threshold",
+            "max_model_quote_vol_gap",
+        ):
+            require_finite(name, getattr(self, name))
+        if self.premium_budget is not None:
+            require_finite("premium_budget", self.premium_budget)
+        for name in ("require_quote_size", "allow_extrapolated_vol"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValidationError(f"{name} must be true or false")
+        if self.time_limit_seconds <= 0.0:
+            raise ValidationError("time_limit_seconds must be positive")
         if self.risk_aversion < 0.0 or self.cvar_weight < 0.0:
             raise ValidationError("risk_aversion and cvar_weight must be non-negative")
         if not 0.0 < self.cvar_alpha < 1.0:
@@ -130,6 +154,8 @@ class HedgeConfig:
             raise ValidationError("max_legs must be at least 1")
         if self.ticket_cost < 0.0:
             raise ValidationError("ticket_cost must be non-negative")
+        if self.max_lots_per_leg < 1:
+            raise ValidationError("max_lots_per_leg must be at least 1")
         if not 0.0 < self.mip_gap < 1.0:
             raise ValidationError("mip_gap must be in (0, 1)")
 
@@ -159,6 +185,7 @@ class ProposalStatus(StrEnum):
     OPTIMAL = "optimal"
     WITHIN_GAP = "within_gap"
     NO_TRADE = "no_trade"
+    NO_USABLE_CANDIDATES = "no_usable_candidates"
     UNSTABLE = "unstable"
 
 

@@ -41,3 +41,7 @@ htmlcov/
 dist/
 # Vendor market data is never committed: redistribution is license-restricted.
 vendor_data/
+
+# Local run artifacts
+gn_audit.jsonl
+nohup.out

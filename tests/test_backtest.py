@@ -24,7 +24,7 @@ from greeks_neutralizer.backtest.proxy import (
 )
 from greeks_neutralizer.backtest.report import compare, max_drawdown, policy_stats, stress_days
 from greeks_neutralizer.domain import OptionRight, Position, Quote
-from greeks_neutralizer.errors import ValidationError
+from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.hedging.problem import GreekName, GreekTarget, HedgeCandidate, HedgeConfig
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.black import black_greeks
@@ -181,12 +181,12 @@ def test_policy_failures_are_recorded_not_hidden():
         name = "broken"
 
         def trades(self, day, book, hedges):
-            raise RuntimeError("no quotes")
+            raise MarketDataError("no quotes")
 
     result = run_backtest(rising_market(5), ShortStrangleBook(), Broken())
     assert len(result.failures) == 5
     assert sum(d.failures for d in result.days) == 4
-    with pytest.raises(RuntimeError):
+    with pytest.raises(MarketDataError):
         run_backtest(rising_market(5), ShortStrangleBook(), Broken(), fail_fast=True)
 
 
@@ -210,7 +210,7 @@ def test_optimizer_policy_runs_and_reduces_risk_on_real_shape():
         GreekTarget("SPX", greek, weight=weight)
         for greek, weight in (
             (GreekName.DELTA, 0.01),
-            (GreekName.GAMMA, 0.015),
+            (GreekName.GAMMA, 0.045),
             (GreekName.VEGA, 2.0),
         )
     )

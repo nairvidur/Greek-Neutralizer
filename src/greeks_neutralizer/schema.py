@@ -6,6 +6,7 @@ an unknown field is an error: a misspelled option such as `max_legz` must not si
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -54,7 +55,7 @@ def _require(data: Any, name: str) -> JsonDict:
     return data
 
 
-def _check_fields(
+def check_fields(
     data: JsonDict, name: str, required: set[str], optional: set[str] | None = None
 ) -> None:
     optional = optional or set()
@@ -96,11 +97,11 @@ def parse_instrument(data: Any) -> Instrument:
     d = _require(data, "instrument")
     kind = d.get("type")
     if kind == "option":
-        _check_fields(
+        check_fields(
             d,
             "option",
             {"type", "underlying", "right", "strike", "expiry"},
-            {"style", "multiplier", "settlement", "currency"},
+            {"style", "multiplier", "settlement", "currency", "exchange_symbol"},
         )
         return OptionContract(
             underlying=d["underlying"],
@@ -111,9 +112,10 @@ def parse_instrument(data: Any) -> Instrument:
             multiplier=d.get("multiplier", 100.0),
             settlement=SettlementKind(d.get("settlement", "physical")),
             currency=d.get("currency", "USD"),
+            exchange_symbol=d.get("exchange_symbol", ""),
         )
     if kind == "linear":
-        _check_fields(
+        check_fields(
             d,
             "linear",
             {"type", "symbol", "underlying"},
@@ -134,7 +136,7 @@ def parse_instrument(data: Any) -> Instrument:
 
 def parse_position(data: Any) -> Position:
     d = _require(data, "position")
-    _check_fields(d, "position", {"instrument", "quantity"})
+    check_fields(d, "position", {"instrument", "quantity"})
     return Position(parse_instrument(d["instrument"]), d["quantity"])
 
 
@@ -146,14 +148,14 @@ def _parse_surface(data: Any) -> FlatVol | SviSurface:
     d = _require(data, "surface")
     kind = d.get("type")
     if kind == "flat":
-        _check_fields(d, "flat surface", {"type", "sigma"})
+        check_fields(d, "flat surface", {"type", "sigma"})
         return FlatVol(d["sigma"])
     if kind == "svi":
-        _check_fields(d, "svi surface", {"type", "slices"}, {"quoted_ranges"})
+        check_fields(d, "svi surface", {"type", "slices"}, {"quoted_ranges"})
 
         def parse_slice(item: Any) -> SviSlice:
             s = _require(item, "slice")
-            _check_fields(s, "slice", {"tau", "a", "b", "rho", "m", "sigma"})
+            check_fields(s, "slice", {"tau", "a", "b", "rho", "m", "sigma"})
             return SviSlice(s["tau"], s["a"], s["b"], s["rho"], s["m"], s["sigma"])
 
         ranges = tuple((float(r[0]), float(r[1])) for r in d.get("quoted_ranges", ()))
@@ -163,7 +165,7 @@ def _parse_surface(data: Any) -> FlatVol | SviSurface:
 
 def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
     d = _require(data, f"market {symbol}")
-    _check_fields(
+    check_fields(
         d,
         f"market {symbol}",
         {"spot", "surface"},
@@ -171,7 +173,7 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
     )
     if "curve" in d:
         curve_data = _require(d["curve"], "curve")
-        _check_fields(curve_data, "curve", {"times", "zero_rates"})
+        check_fields(curve_data, "curve", {"times", "zero_rates"})
         curve = DiscountCurve(tuple(curve_data["times"]), tuple(curve_data["zero_rates"]))
     elif "rate" in d:
         curve = DiscountCurve.flat(d["rate"])
@@ -180,7 +182,7 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
 
     def parse_dividend(item: Any) -> CashDividend:
         v = _require(item, "dividend")
-        _check_fields(v, "dividend", {"ex_date", "amount"})
+        check_fields(v, "dividend", {"ex_date", "amount"})
         return CashDividend(_datetime(v["ex_date"], "ex_date"), v["amount"])
 
     return UnderlyingMarket(
@@ -195,7 +197,7 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
 
 def parse_market(data: Any) -> MarketSnapshot:
     d = _require(data, "market")
-    _check_fields(d, "market", {"as_of", "underlyings"})
+    check_fields(d, "market", {"as_of", "underlyings"})
     underlyings = _require(d["underlyings"], "underlyings")
     return MarketSnapshot(
         _datetime(d["as_of"], "as_of"),
@@ -205,7 +207,7 @@ def parse_market(data: Any) -> MarketSnapshot:
 
 def _parse_quote(data: Any) -> Quote:
     d = _require(data, "quote")
-    _check_fields(d, "quote", {"bid", "ask", "bid_size", "ask_size", "timestamp"})
+    check_fields(d, "quote", {"bid", "ask", "bid_size", "ask_size", "timestamp"})
     return Quote(
         d["bid"], d["ask"], d["bid_size"], d["ask_size"], _datetime(d["timestamp"], "timestamp")
     )
@@ -213,11 +215,11 @@ def _parse_quote(data: Any) -> Quote:
 
 def parse_candidate(data: Any) -> HedgeCandidate:
     d = _require(data, "candidate")
-    _check_fields(
+    check_fields(
         d,
         "candidate",
         {"instrument", "quote"},
-        {"fee_per_unit", "max_buy", "max_sell", "impact_per_unit", "lot_size", "displayed_only"},
+        {"fee_per_unit", "max_buy", "max_sell", "impact_per_unit", "lot_size"},
     )
     return HedgeCandidate(
         instrument=parse_instrument(d["instrument"]),
@@ -227,13 +229,12 @@ def parse_candidate(data: Any) -> HedgeCandidate:
         max_sell=d.get("max_sell"),
         impact_per_unit=d.get("impact_per_unit", 0.0),
         lot_size=d.get("lot_size", 1),
-        displayed_only=d.get("displayed_only", False),
     )
 
 
 def parse_target(data: Any) -> GreekTarget:
     d = _require(data, "target")
-    _check_fields(d, "target", {"underlying", "greek"}, {"lower", "upper", "weight"})
+    check_fields(d, "target", {"underlying", "greek"}, {"lower", "upper", "weight"})
     try:
         greek = GreekName(d["greek"])
     except ValueError:
@@ -244,7 +245,7 @@ def parse_target(data: Any) -> GreekTarget:
 
 def parse_scenario(data: Any) -> Scenario:
     d = _require(data, "scenario")
-    _check_fields(
+    check_fields(
         d,
         "scenario",
         {"name"},
@@ -292,8 +293,10 @@ def _parse_config(data: Any) -> HedgeConfig:
         "allow_extrapolated_vol",
         "instability_threshold",
         "regret_threshold",
+        "max_lots_per_leg",
+        "max_model_quote_vol_gap",
     }
-    _check_fields(d, "config", set(), allowed)
+    check_fields(d, "config", set(), allowed)
     if "max_quote_age_seconds" in d:
         d["max_quote_age"] = timedelta(seconds=d.pop("max_quote_age_seconds"))
     return HedgeConfig(**d)
@@ -301,7 +304,7 @@ def _parse_config(data: Any) -> HedgeConfig:
 
 def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
     d = _require(data, "request")
-    _check_fields(
+    check_fields(
         d,
         "request",
         {"book", "candidates", "targets", "market"},
@@ -332,6 +335,7 @@ def instrument_to_json(instrument: Instrument) -> dict[str, Any]:
             "multiplier": instrument.multiplier,
             "settlement": instrument.settlement.value,
             "currency": instrument.currency,
+            "exchange_symbol": instrument.exchange_symbol,
         }
     return {
         "type": "linear",
@@ -376,12 +380,18 @@ def book_to_json(book: BookValuation) -> dict[str, Any]:
 def proposal_to_json(proposal: HedgeProposal) -> dict[str, Any]:
     stability = None
     if proposal.stability is not None:
+        regret = proposal.stability.regret_ratio
+        condition = proposal.stability.condition_number
         stability = {
-            "condition_number": proposal.stability.condition_number,
+            # Infinity is not valid JSON, and null alone would hide that it was unbounded.
+            "condition_number": condition if math.isfinite(condition) else None,
             "lot_change_ratio": proposal.stability.lot_change_ratio,
-            "regret_ratio": proposal.stability.regret_ratio,
+            "regret_ratio": regret if math.isfinite(regret) else None,
+            "regret_unbounded": not math.isfinite(regret),
             "is_stable": proposal.stability.is_stable,
-            "drift": dict(proposal.stability.drift),
+            "drift": {
+                k: v if math.isfinite(v) else None for k, v in proposal.stability.drift.items()
+            },
             "notes": list(proposal.stability.notes),
         }
     return {

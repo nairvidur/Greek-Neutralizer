@@ -19,7 +19,7 @@ from greeks_neutralizer.domain import (
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.market import MarketSnapshot
 from greeks_neutralizer.pricing.black import FloatArray
-from greeks_neutralizer.pricing.book import Exposure, value_book, value_options
+from greeks_neutralizer.pricing.book import Exposure, mark_value, value_book, value_options
 from greeks_neutralizer.time_model import calendar_years
 
 
@@ -113,9 +113,11 @@ def attribute_pnl(
     option_rows = [i for i, p in enumerate(positions) if isinstance(p.instrument, OptionContract)]
     if contracts:
         insts = [p.instrument for p in contracts if isinstance(p.instrument, OptionContract)]
-        v0 = value_options(insts, start).vol
-        v1 = value_options(insts, end).vol
-        dvol[option_rows] = v1 - v0
+        v0 = value_options(insts, start)
+        v1 = value_options(insts, end)
+        # An option that expired has no vol. Its loss of time value is theta, and not a vol move.
+        alive = ~(v0.expired | v1.expired)
+        dvol[option_rows] = np.where(alive, v1.vol - v0.vol, 0.0)
 
     days = calendar_years(start.as_of, end.as_of) * 365.0
     terms = dict.fromkeys(("delta", "gamma", "vega", "vanna", "volga", "theta"), 0.0)
@@ -130,7 +132,11 @@ def attribute_pnl(
         terms["vanna"] += e.vanna_1pt * pts * ds
         terms["volga"] += 0.5 * e.volga_1pt * pts * pts
         terms["theta"] += e.theta_1d * days
-    total = end_book.total_value - start_book.total_value
+    total = sum(
+        mark_value(after.position, after.unit_price, after.exposure.value)
+        - mark_value(before.position, before.unit_price, before.exposure.value)
+        for before, after in zip(start_book.lines, end_book.lines, strict=True)
+    )
     explained = sum(terms.values())
     return PnLAttribution(
         total=total,

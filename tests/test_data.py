@@ -241,8 +241,8 @@ def test_cboe_excludes_and_counts_non_standard_deliverables():
 
 
 def test_cboe_counts_malformed_rows():
-    parsed = parse_cboe_delayed(_payload([ROW, {"option": "garbage"}, dict(ROW, bid="x")]))
-    assert parsed.n_rejected == 2
+    rows = [*([ROW] * 40), {"option": "garbage"}, dict(ROW, bid="x")]
+    assert parse_cboe_delayed(_payload(rows)).n_rejected == 2
 
 
 def test_cboe_detects_missing_sizes():

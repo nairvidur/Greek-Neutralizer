@@ -24,7 +24,13 @@ from greeks_neutralizer.pricing.american import (
 )
 from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.pricing.implied_vol import implied_vol
-from greeks_neutralizer.surface import SliceFit, SviSurface, fit_surface
+from greeks_neutralizer.surface import (
+    QuotedArbitrageReport,
+    SliceFit,
+    SviSurface,
+    fit_surface,
+    quoted_arbitrage_report,
+)
 from greeks_neutralizer.time_model import CALENDAR_CLOCK, VarianceClock, calendar_years
 
 
@@ -143,6 +149,8 @@ class ChainCalibration:
     n_quotes_used: int
     excluded_expiries: tuple[str, ...]
     flags: dict[str, int]
+    quoted_arbitrage: QuotedArbitrageReport
+    n_unconverged_fits: int
 
 
 def _deamericanize(
@@ -196,10 +204,16 @@ def calibrate_chain(
     policy: QualityPolicy | None = None,
     min_points_per_expiry: int = 8,
     max_abs_log_moneyness_stdevs: float = 4.0,
+    max_weighted_fit_error: float = 0.02,
+    max_parity_residual_share: float = 0.005,
 ) -> ChainCalibration:
     """Quality gate, parity forwards, OTM implied vols, then an arbitrage-penalized SVI surface.
 
     Uses OTM options only, where vega is resolvable and early exercise matters least.
+
+    Fails closed. An expiry is excluded, with its reason recorded, if parity does not hold or its
+    fit error is over the limit. With no expiry left, or with arbitrage inside the quoted strikes,
+    this raises rather than returning a surface that looks usable.
     """
     items = list(chain)
     if not items:
@@ -235,6 +249,12 @@ def calibrate_chain(
         except MarketDataError as exc:
             excluded.append(f"{expiry.date()}: {exc}")
             continue
+        if parity.residual_rms > max_parity_residual_share * parity.forward:
+            excluded.append(
+                f"{expiry.date()}: parity residual {parity.residual_rms:.3f} on a forward of "
+                f"{parity.forward:.2f}"
+            )
+            continue
         k, vol, vega_weight = data
         if k.size < min_points_per_expiry:
             excluded.append(f"{expiry.date()}: only {k.size} usable OTM points")
@@ -244,7 +264,29 @@ def calibrate_chain(
         used += int(k.size)
     if not slices:
         raise MarketDataError(f"no expiry could be calibrated: {excluded[:3]}")
-    surface, fits = fit_surface(slices)
+    _, all_fits = fit_surface(slices)
+    kept: list[SliceFit] = []
+    kept_forwards: list[ParityForward] = []
+    for fit, parity in zip(all_fits, forwards, strict=True):
+        if fit.weighted_rmse_vol > max_weighted_fit_error:
+            excluded.append(
+                f"{parity.expiry.date()}: fit error {fit.weighted_rmse_vol:.4f} is over the limit"
+            )
+            used -= fit.n_points
+            continue
+        kept.append(fit)
+        kept_forwards.append(parity)
+    if not kept:
+        raise MarketDataError(f"no expiry could be calibrated: {excluded[:3]}")
+    surface = SviSurface(tuple(f.slice for f in kept), tuple((f.k_min, f.k_max) for f in kept))
+    fits = tuple(kept)
+    forwards = kept_forwards
+    report = quoted_arbitrage_report(fits)
+    if not report.is_clean:
+        raise MarketDataError(
+            f"surface has arbitrage inside the quoted strikes: minimum g {report.min_g:.4f}, "
+            f"calendar gap {report.min_relative_calendar_gap:.4%}"
+        )
     return ChainCalibration(
         surface=surface,
         fits=fits,
@@ -253,6 +295,8 @@ def calibrate_chain(
         n_quotes_used=used,
         excluded_expiries=tuple(excluded),
         flags=dict(sorted(flag_counts.items())),
+        quoted_arbitrage=report,
+        n_unconverged_fits=sum(1 for fit in fits if not fit.converged),
     )
 
 

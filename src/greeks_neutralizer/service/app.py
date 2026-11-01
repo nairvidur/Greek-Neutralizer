@@ -9,6 +9,7 @@ Configuration, from the environment only:
   GN_TOKENS      required: comma-separated token=actor pairs, for example "s3cret=alice,t0ken=bob"
   GN_AUDIT_LOG   audit log path, default ./gn_audit.jsonl
   GN_MAX_BODY    maximum request size in bytes, default 5000000
+  GN_MAX_MARKET_AGE_SECONDS  oldest market a proposal can be submitted on, default 900
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,7 @@ from greeks_neutralizer.risk.scenarios import book_scenario_pnl, spot_vol_grid
 from greeks_neutralizer.schema import (
     SCENARIO_SETS,
     book_to_json,
+    check_fields,
     parse_book,
     parse_hedge_request,
     parse_market,
@@ -54,6 +57,7 @@ from greeks_neutralizer.workflow import (
     ProposalRecord,
     ProposalStore,
     WorkflowError,
+    WorkflowPolicy,
     verify_audit_log,
 )
 
@@ -108,6 +112,7 @@ def create_app(
     tokens: dict[str, str] | None = None,
     audit_path: Path | None = None,
     max_body: int | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     """Build the app. With no tokens configured it refuses to start, rather than running open."""
     token_map = tokens if tokens is not None else _parse_tokens(os.environ.get("GN_TOKENS", ""))
@@ -115,7 +120,11 @@ def create_app(
         raise RuntimeError("no API tokens configured: set GN_TOKENS")
     audit_file = audit_path or Path(os.environ.get("GN_AUDIT_LOG", "gn_audit.jsonl"))
     body_limit = max_body or int(os.environ.get("GN_MAX_BODY", "5000000"))
-    store = ProposalStore(AuditLog(audit_file))
+    max_age = float(os.environ.get("GN_MAX_MARKET_AGE_SECONDS", "900"))
+    now = clock or (lambda: datetime.now(UTC))
+    store = ProposalStore(
+        AuditLog(audit_file), WorkflowPolicy(max_market_age=timedelta(seconds=max_age)), now
+    )
 
     app = FastAPI(
         title="Greeks Neutralizer",
@@ -141,14 +150,22 @@ def create_app(
     ) -> Response:
         request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
         length = request.headers.get("content-length")
+        # A body with no declared length would bypass the limit, so it is refused outright.
+        if request.method == "POST" and length is None and request.headers.get("transfer-encoding"):
+            return JSONResponse({"error": "a Content-Length is required"}, status_code=411)
         if length and int(length) > body_limit:
             return JSONResponse(
                 {"error": "request too large", "limit": body_limit}, status_code=413
             )
         started = time.perf_counter()
-        response = await call_next(request)
-        elapsed = time.perf_counter() - started
         app.state.counts["requests"] += 1
+        try:
+            response = await call_next(request)
+        except Exception:
+            app.state.counts["errors"] += 1
+            logger.exception("unhandled error, request_id=%s", request_id)
+            raise
+        elapsed = time.perf_counter() - started
         if response.status_code >= 500:
             app.state.counts["errors"] += 1
         response.headers["x-request-id"] = request_id
@@ -192,14 +209,19 @@ def create_app(
         return JSONResponse({"error": str(exc), "type": type(exc).__name__}, 500)
 
     @app.get("/healthz")
-    def healthz() -> dict[str, Any]:
-        """Liveness, plus whether the audit chain is intact: a broken chain is an incident."""
+    def healthz() -> JSONResponse:
+        """Liveness, and whether the audit chain is intact. A broken chain returns 503, so that a
+        monitor watching status codes sees it: it is an incident, and approvals are blocked."""
         check = verify_audit_log(audit_file)
-        return {
-            "status": "ok" if check.ok else "audit_chain_broken",
-            "version": __version__,
-            "audit_records": check.records,
-        }
+        return JSONResponse(
+            {
+                "status": "ok" if check.ok else "audit_chain_broken",
+                "version": __version__,
+                "audit_records": check.records,
+                "detail": check.reason,
+            },
+            status_code=200 if check.ok else 503,
+        )
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics() -> str:
@@ -220,10 +242,12 @@ def create_app(
 
     @app.get("/v1/example")
     def example(user: str = Depends(actor)) -> dict[str, Any]:
-        return example_request()
+        # Dated now, so that the sample can pass the market-age check on submission.
+        return example_request(now())
 
     @app.post("/v1/value")
     def value(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        check_fields(payload, "request", {"book", "market"})
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         result = book_to_json(value_book(book, snapshot))
@@ -235,6 +259,7 @@ def create_app(
 
     @app.post("/v1/stress")
     def stress(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
+        check_fields(payload, "request", {"book", "market"}, {"set"})
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         name = payload.get("set", "all")
@@ -254,6 +279,7 @@ def create_app(
     @app.post("/v1/grid")
     def grid(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
         """A spot and vol grid by full repricing: rows are spot shocks and columns vol shocks."""
+        check_fields(payload, "request", {"book", "market"}, {"set"})
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         spots = (-0.2, -0.1, -0.05, -0.02, 0.0, 0.02, 0.05, 0.1)
@@ -287,6 +313,8 @@ def create_app(
                         "penalized_residual": p.penalized_residual,
                         "worst_scenario_pnl": p.worst_scenario_pnl,
                         "infeasible_reason": p.infeasible_reason,
+                        "status": p.status,
+                        "issues": list(p.issues),
                     }
                     for p in points
                 ]

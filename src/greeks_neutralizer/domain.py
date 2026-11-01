@@ -80,6 +80,8 @@ class OptionContract:
     multiplier: float = 100.0
     settlement: SettlementKind = SettlementKind.PHYSICAL
     currency: str = "USD"
+    # The listed root, such as SPXW under the SPX underlying. Tickets name what actually trades.
+    exchange_symbol: str = ""
 
     def __post_init__(self) -> None:
         if not self.underlying:
@@ -146,7 +148,8 @@ class LinearInstrument:
 
     @property
     def key(self) -> str:
-        return f"{self.symbol}|{self.kind.value}|{self.multiplier:g}"
+        expiry = self.expiry.isoformat() if self.expiry is not None else ""
+        return f"{self.symbol}|{self.kind.value}|{self.multiplier:g}|{expiry}"
 
     def describe(self) -> str:
         return f"{self.symbol} ({self.kind.value})"

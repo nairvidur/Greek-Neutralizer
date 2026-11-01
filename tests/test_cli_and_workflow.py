@@ -261,7 +261,7 @@ class Clock:
 @pytest.fixture
 def proposal():
     problem, snapshot, _ = parse_hedge_request(example_request())
-    return solve_hedge(problem, snapshot)
+    return solve_hedge(problem, snapshot, run_stability=True)
 
 
 @pytest.fixture

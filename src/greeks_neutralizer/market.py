@@ -21,6 +21,8 @@ from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.time_model import CALENDAR_CLOCK, VarianceClock, calendar_years
 
+_MAX_PLAUSIBLE_RATE = 1.0
+
 
 @dataclass(frozen=True, slots=True)
 class DiscountCurve:
@@ -38,6 +40,10 @@ class DiscountCurve:
             raise ValidationError("curve times must be positive")
         for rate in self.zero_rates:
             require_finite("zero rate", rate)
+            if abs(rate) > _MAX_PLAUSIBLE_RATE:
+                raise ValidationError(
+                    f"zero rate {rate} is implausible: rates are decimals, so 5% is 0.05"
+                )
 
     @staticmethod
     def flat(rate: float) -> DiscountCurve:
@@ -134,6 +140,15 @@ class UnderlyingMarket:
                 pv += div.amount * float(self.curve.discount(calendar_years(as_of, div.ex_date)))
         return pv
 
+    def pv_dividends_time_weighted(self, as_of: datetime, until: datetime) -> float:
+        """Sum of t_i * PV_i, which is minus the derivative of PV(dividends) in the rate."""
+        total = 0.0
+        for div in self.dividends:
+            if as_of < div.ex_date <= until:
+                t = calendar_years(as_of, div.ex_date)
+                total += t * div.amount * float(self.curve.discount(t))
+        return total
+
     def forward(self, as_of: datetime, expiry: datetime) -> float:
         T = calendar_years(as_of, expiry)
         escrowed = self.spot - self.pv_dividends(as_of, expiry)
@@ -174,7 +189,13 @@ class MarketSnapshot:
                     "carry": m.carry_yield,
                     "dividends": [(d.ex_date.isoformat(), d.amount) for d in m.dividends],
                     "surface": m.surface.fingerprint_payload(),
-                    "clock_is_calendar": m.clock.is_calendar,
+                    "clock": [
+                        m.clock.session_weight,
+                        m.clock.overnight_weight,
+                        m.clock.closed_day_weight,
+                        [(e[0].isoformat(), e[1]) for e in m.clock.events],
+                        getattr(m.clock.is_session_day, "__qualname__", "custom"),
+                    ],
                 }
                 for sym, m in sorted(self.underlyings.items())
             },

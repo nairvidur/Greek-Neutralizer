@@ -8,8 +8,9 @@ Discrete dividends use the escrowed model consistent with `market.UnderlyingMark
 tree evolves S* = S - PV(dividends before expiry), and the exercise value at each node adds back the
 PV of dividends not yet gone ex. Exercise just before an ex-date therefore captures the dividend.
 
-Greeks come from central bumps through the control-variate price. Third-order Greeks use the
-European closed form and are flagged as such in `pricing.book`.
+Greeks to second order, and charm, come from central bumps through the control-variate price.
+Veta, speed, zomma, and color stay at their European values for American rows: those rows are
+marked by `OptionValuation.american_tree`, and these Greeks are not reported in `Exposure`.
 """
 
 from __future__ import annotations
@@ -207,6 +208,7 @@ class AmericanGreeks:
     phi: FloatArray
     vanna: FloatArray
     volga: FloatArray
+    charm: FloatArray
     exercise_premium: FloatArray
 
 
@@ -247,27 +249,32 @@ def american_greeks(batch: AmericanBatch, steps: int = DEFAULT_GREEK_STEPS) -> A
     q_up = american_price(_with(b, q=b.q + dr), steps)
     q_dn = american_price(_with(b, q=b.q - dr), steps)
 
-    # Theta: a calendar roll of min(1 day, half the remaining life), keeping the clock ratio.
-    dt = np.minimum(1.0 / 365.0, 0.5 * b.T)
+    # Theta: a calendar roll of at most 1 day, half the remaining life, and half the time to the
+    # next ex-date. Rolling across one with spot held flat would report the dividend as decay.
+    next_ex = np.full_like(b.T, np.inf)
+    if b.div_times.shape[1]:
+        next_ex = np.min(np.where(b.div_amounts > 0.0, b.div_times, np.inf), axis=1)
+    dt = np.minimum(np.minimum(1.0 / 365.0, 0.5 * b.T), 0.5 * next_ex)
     ratio = 1.0 - dt / b.T
-    rolled = american_price(
-        _with(
-            b,
-            T=b.T * ratio,
-            tau=b.tau * ratio,
-            div_times=np.where(np.isfinite(b.div_times), b.div_times - dt[:, None], b.div_times),
-        ),
-        steps,
+    rolled_batch = _with(
+        b,
+        T=b.T * ratio,
+        tau=b.tau * ratio,
+        div_times=np.where(np.isfinite(b.div_times), b.div_times - dt[:, None], b.div_times),
     )
+    rolled = american_price(rolled_batch, steps)
+    rolled_up = american_price(_with(rolled_batch, spot=b.spot + h), steps)
+    rolled_dn = american_price(_with(rolled_batch, spot=b.spot - h), steps)
 
     up_v = american_price(_with(b, spot=b.spot + h, sigma=b.sigma + dv), steps)
     dn_v = american_price(_with(b, spot=b.spot - h, sigma=b.sigma + dv), steps)
     up_w = american_price(_with(b, spot=b.spot + h, sigma=np.maximum(b.sigma - dv, 1e-6)), steps)
     dn_w = american_price(_with(b, spot=b.spot - h, sigma=np.maximum(b.sigma - dv, 1e-6)), steps)
 
+    delta = (up - dn) / (2.0 * h)
     return AmericanGreeks(
         price=reported_price,
-        delta=(up - dn) / (2.0 * h),
+        delta=delta,
         gamma=np.maximum((up - 2.0 * p0 + dn) / (h * h), 0.0),
         vega=(v_up - v_dn) / (2.0 * dv),
         theta=(rolled - p0) / dt,
@@ -275,6 +282,7 @@ def american_greeks(batch: AmericanBatch, steps: int = DEFAULT_GREEK_STEPS) -> A
         phi=(q_up - q_dn) / (2.0 * dr),
         vanna=(up_v - dn_v - up_w + dn_w) / (4.0 * h * dv),
         volga=(v_up - 2.0 * p0 + v_dn) / (dv * dv),
+        charm=((rolled_up - rolled_dn) / (2.0 * h) - delta) / dt,
         exercise_premium=np.maximum(reported_price - european_closed_form(b), 0.0),
     )
 
@@ -282,9 +290,12 @@ def american_greeks(batch: AmericanBatch, steps: int = DEFAULT_GREEK_STEPS) -> A
 def exercise_is_ever_optimal(
     omega: FloatArray, r: FloatArray, q: FloatArray, has_dividends: NDArray[np.bool_]
 ) -> NDArray[np.bool_]:
-    """False where early exercise has no value, so the European closed form is exact: a call with
-    no carry yield or dividends, or a put with non-positive rates."""
+    """False only where early exercise cannot have value, so the European closed form is exact.
+
+    A call needs r >= 0, q <= 0, and no dividends: with a negative rate, deferring the strike costs
+    money. A put needs r <= 0 and q >= 0, for the same reason on the other side.
+    """
     call = omega > 0
-    call_never = call & (q <= 0.0) & ~has_dividends
-    put_never = ~call & (r <= 0.0)
+    call_never = call & (r >= 0.0) & (q <= 0.0) & ~has_dividends
+    put_never = ~call & (r <= 0.0) & (q >= 0.0)
     return ~(call_never | put_never)

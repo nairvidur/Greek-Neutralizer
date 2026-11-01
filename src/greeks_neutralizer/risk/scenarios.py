@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,7 +28,7 @@ from greeks_neutralizer.pricing.american import (
     exercise_is_ever_optimal,
 )
 from greeks_neutralizer.pricing.black import FloatArray, black_premium
-from greeks_neutralizer.pricing.book import _american_batch, linear_unit_exposure
+from greeks_neutralizer.pricing.book import _american_batch, linear_unit_exposure, value_book
 from greeks_neutralizer.time_model import calendar_years
 
 _REF_TAU = 30.0 / 365.0
@@ -61,17 +61,46 @@ class Scenario:
 
 @dataclass(frozen=True, slots=True)
 class ShockedSurface:
+    """A base surface under a scenario.
+
+    Sticky strike keeps vol at a fixed strike: a move in the forward shifts log-moneyness, so the
+    base surface is read at the strike's old k. With dividends, the forward moves with spot less
+    the PV of dividends, so that shift depends on tenor. `dividends` holds (time, PV) pairs, and
+    time is compared with variance time, which is exact for the default calendar clock.
+    """
+
     base: VolSurface
     vol_shock: float
     skew_shock: float
     term_power: float
-    k_shift: float
+    sticky_strike: bool
+    spot: float
+    spot_shock: float
+    dividends: tuple[tuple[float, float], ...] = ()
+
+    def _k_shift(self, tau: FloatArray) -> FloatArray:
+        tau_ = np.asarray(tau, dtype=np.float64)
+        if not self.sticky_strike:
+            return np.zeros_like(tau_)
+        pv = np.zeros_like(tau_)
+        for time_, value in self.dividends:
+            pv = pv + np.where(tau_ >= time_, value, 0.0)
+        before = np.maximum(self.spot - pv, 1e-12)
+        after = np.maximum(self.spot * (1.0 + self.spot_shock) - pv, 1e-12)
+        return np.asarray(np.log(after / before), dtype=np.float64)
 
     def vol(self, k: FloatArray, tau: FloatArray) -> FloatArray:
-        base_vol = self.base.vol(k + self.k_shift, tau)
+        base_vol = self.base.vol(k + self._k_shift(tau), tau)
         factor = np.minimum((_REF_TAU / np.maximum(tau, 1e-9)) ** self.term_power, _MAX_TERM_FACTOR)
         shocked = base_vol + self.vol_shock * factor + self.skew_shock * k
         return np.asarray(np.maximum(shocked, _MIN_VOL), dtype=np.float64)
+
+    def extrapolating(self, k: FloatArray, tau: FloatArray) -> NDArray[np.bool_]:
+        """Delegates to the base surface, so a scenario cannot lift the quoted-strike gate."""
+        check = getattr(self.base, "extrapolating", None)
+        if check is None:
+            return np.zeros(np.shape(k), dtype=bool)
+        return np.asarray(check(k + self._k_shift(tau), tau), dtype=np.bool_)
 
     def fingerprint_payload(self) -> dict[str, object]:
         return {
@@ -80,16 +109,29 @@ class ShockedSurface:
             "vol_shock": self.vol_shock,
             "skew_shock": self.skew_shock,
             "term_power": self.term_power,
-            "k_shift": self.k_shift,
+            "sticky_strike": self.sticky_strike,
+            "spot": self.spot,
+            "spot_shock": self.spot_shock,
+            "dividends": list(self.dividends),
         }
 
 
-def shock_market(market: UnderlyingMarket, scenario: Scenario) -> UnderlyingMarket:
-    # Sticky strike keeps vol at a fixed strike: a move in the forward shifts log-moneyness, so the
-    # base surface is read at the strike's old k. Sticky moneyness reads it at the new k.
-    k_shift = float(np.log1p(scenario.spot_shock)) if scenario.sticky_strike else 0.0
+def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) -> UnderlyingMarket:
+    dividends = tuple(
+        (t, d.amount * float(market.curve.discount(t)))
+        for d in market.dividends
+        if d.ex_date > as_of
+        for t in (calendar_years(as_of, d.ex_date),)
+    )
     surface = ShockedSurface(
-        market.surface, scenario.vol_shock, scenario.skew_shock, scenario.term_power, k_shift
+        market.surface,
+        scenario.vol_shock,
+        scenario.skew_shock,
+        scenario.term_power,
+        scenario.sticky_strike,
+        market.spot,
+        scenario.spot_shock,
+        dividends,
     )
     return replace(market, spot=market.spot * (1.0 + scenario.spot_shock), surface=surface)
 
@@ -102,7 +144,7 @@ def shock_snapshot(
     return MarketSnapshot(
         snapshot.as_of + timedelta(days=scenario.days_forward),
         {
-            sym: shock_market(m, scenario) if sym in chosen else m
+            sym: shock_market(m, scenario, snapshot.as_of) if sym in chosen else m
             for sym, m in snapshot.underlyings.items()
         },
     )
@@ -178,7 +220,9 @@ def _price_group(
             market, as_of, group, sel, T, tau, r, q, vol, K, omega
         )
         prices[sel] = american_price(batch, steps)
-    return prices
+    # Worth at least immediate exercise, as in valuation.
+    intrinsic = np.maximum(omega * (market.spot - K), 0.0)
+    return np.where(is_american, np.maximum(prices, intrinsic), prices)
 
 
 def scenario_pnl_matrix(
@@ -296,18 +340,40 @@ class TaylorCheck:
 def taylor_vs_full(
     positions: Sequence[Position], snapshot: MarketSnapshot, scenarios: Sequence[Scenario]
 ) -> tuple[TaylorCheck, ...]:
-    """Second-order expansion in spot and vol (with vanna, volga, and theta) versus repricing."""
-    from greeks_neutralizer.pricing.book import value_book
+    """Second-order expansion in spot and vol, with vanna, volga, and theta, against repricing.
 
+    Each contract gets the vol change the scenario actually applies to it: the term factor for its
+    tenor, and the skew shock at its moneyness. Anything else would measure a mismatch between two
+    scenarios rather than how far Greeks are from the truth. Vol floors, and the sticky-moneyness
+    smile move, are not in the expansion.
+    """
     book = value_book(positions, snapshot)
     full = book_scenario_pnl(positions, snapshot, scenarios)
     out: list[TaylorCheck] = []
+    tenors: dict[str, tuple[float, float]] = {}
+    for position in positions:
+        contract = position.instrument
+        if isinstance(contract, OptionContract) and contract.key not in tenors:
+            market = snapshot.market(contract.underlying)
+            tenors[contract.key] = (
+                market.clock.tau(snapshot.as_of, contract.expiry),
+                market.forward(snapshot.as_of, contract.expiry),
+            )
     for scenario, actual in zip(scenarios, full, strict=True):
         estimate = 0.0
-        for symbol, e in book.by_underlying.items():
-            spot = snapshot.market(symbol).spot
-            ds = spot * scenario.spot_shock
-            dv_pts = scenario.vol_shock * 100.0
+        for line in book.lines:
+            e = line.exposure
+            instrument = line.position.instrument
+            ds = snapshot.market(instrument.underlying).spot * scenario.spot_shock
+            dv_pts = 0.0
+            if isinstance(instrument, OptionContract) and instrument.key in tenors:
+                tau, forward = tenors[instrument.key]
+                if tau > 0.0:
+                    factor = min(
+                        (_REF_TAU / max(tau, 1e-9)) ** scenario.term_power, _MAX_TERM_FACTOR
+                    )
+                    k = float(np.log(instrument.strike / (forward * (1.0 + scenario.spot_shock))))
+                    dv_pts = (scenario.vol_shock * factor + scenario.skew_shock * k) * 100.0
             estimate += (
                 e.delta_shares * ds
                 + 0.5 * e.gamma_shares * ds * ds
