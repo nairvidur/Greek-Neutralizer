@@ -9,7 +9,7 @@
   "n_candidates": 2254,
   "n_excluded": 40,
   "status": "within_gap",
-  "seconds_to_solve_with_stability": 4.7956939169962425,
+  "seconds_to_solve_with_stability": 4.949415999995836,
   "legs": [
     "Buy 7 SPX (SPXW) 2026-11-20 7550P: delta_dollars -2,234,589, gamma_1pct +524,591, vega_1pt +4,983; cost 284.90",
     "Buy 33 SPX (SPXW) 2026-11-30 7800C: delta_dollars +6,515,508, gamma_1pct +2,179,634, vega_1pt +23,679; cost 1,013.10",
@@ -187,11 +187,18 @@
   "reg_t_estimate_after": 8202784.765109738,
   "expiry_risks": [],
   "issues": [
+    "GATE_SETTINGS gates changed from their defaults: max_quote_age_seconds=2592000.0",
     "INTEGRALITY_GAP objective 2,437.61 against a continuous lower bound of 2,336.66: integer lots cost at most 4.1%"
   ],
   "manifest": {
     "code_version": "2.0.0a1",
     "market_fingerprint": "0c6248c1159802ce75cc7e0278f12570ddbcd7cda3537633533e82f9d76a9e63",
-    "problem_fingerprint": "b5953ad6262c10cfd45cb311c4681a67cea792f4c344f34e171edb5e68088f0a"
+    "problem_fingerprint": "e4a1fd32bc75b45a55e3cc114896f58d4771a978c5755c8916f62be50fb2f99b",
+    "scipy_version": "1.18.1",
+    "numpy_version": "2.5.4",
+    "run_stability": true,
+    "gate_overrides": {
+      "max_quote_age_seconds": 2592000.0
+    }
   }
 }

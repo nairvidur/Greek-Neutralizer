@@ -1,0 +1,210 @@
+{
+  "code_version": "2.0.0a1",
+  "machine": "arm64",
+  "system": "Darwin",
+  "cpu_count": 12,
+  "python": "3.12.13",
+  "note": "One uvicorn worker on the same machine as the load generator, on loopback.",
+  "seconds_per_case": 20.0,
+  "capacity": {
+    "value": [
+      {
+        "clients": 1,
+        "requests": 14544,
+        "throughput_per_second": 727.1927280729029,
+        "statuses": {
+          "200": 14544
+        },
+        "p50_ms": 1.2736249991576187,
+        "p95_ms": 1.718956200056709,
+        "p99_ms": 3.434364119602832,
+        "max_ms": 59.59704199631233
+      },
+      {
+        "clients": 4,
+        "requests": 21948,
+        "throughput_per_second": 1097.2643986937796,
+        "statuses": {
+          "200": 21948
+        },
+        "p50_ms": 3.555499999492895,
+        "p95_ms": 4.179873249086086,
+        "p99_ms": 4.822378508906689,
+        "max_ms": 25.505124998744577
+      },
+      {
+        "clients": 16,
+        "requests": 23425,
+        "throughput_per_second": 1170.820733213457,
+        "statuses": {
+          "200": 23425
+        },
+        "p50_ms": 13.281917003041599,
+        "p95_ms": 15.676566399633883,
+        "p99_ms": 26.89334675815189,
+        "max_ms": 50.94916599773569
+      }
+    ],
+    "stress": [
+      {
+        "clients": 1,
+        "requests": 9959,
+        "throughput_per_second": 497.9374177438955,
+        "statuses": {
+          "200": 9959
+        },
+        "p50_ms": 1.9662920021801256,
+        "p95_ms": 2.2761291002098005,
+        "p99_ms": 2.5015551393153146,
+        "max_ms": 14.53570799640147
+      },
+      {
+        "clients": 4,
+        "requests": 12690,
+        "throughput_per_second": 634.3502550249765,
+        "statuses": {
+          "200": 12690
+        },
+        "p50_ms": 6.2624580023111776,
+        "p95_ms": 6.816751752194248,
+        "p99_ms": 7.554726367525291,
+        "max_ms": 20.13158299814677
+      },
+      {
+        "clients": 16,
+        "requests": 13087,
+        "throughput_per_second": 654.0544614038685,
+        "statuses": {
+          "200": 13087
+        },
+        "p50_ms": 24.205000001529697,
+        "p95_ms": 27.117295599600766,
+        "p99_ms": 37.221017998235766,
+        "max_ms": 43.084958000690676
+      }
+    ],
+    "hedge": [
+      {
+        "clients": 1,
+        "requests": 101,
+        "throughput_per_second": 5.008162747438462,
+        "statuses": {
+          "200": 101
+        },
+        "p50_ms": 198.58949999616016,
+        "p95_ms": 207.5341249947087,
+        "p99_ms": 213.398749998305,
+        "max_ms": 214.48604200122645
+      },
+      {
+        "clients": 4,
+        "requests": 261,
+        "throughput_per_second": 12.93937604410383,
+        "statuses": {
+          "200": 261
+        },
+        "p50_ms": 308.15695799537934,
+        "p95_ms": 350.46108400274534,
+        "p99_ms": 377.288866598974,
+        "max_ms": 396.44933299859986
+      },
+      {
+        "clients": 16,
+        "requests": 252,
+        "throughput_per_second": 12.275527178792418,
+        "statuses": {
+          "200": 252
+        },
+        "p50_ms": 1285.7575205016474,
+        "p95_ms": 1593.627147850202,
+        "p99_ms": 1808.3135581686663,
+        "max_ms": 1870.6141250004293
+      }
+    ]
+  },
+  "fixed_rate_hedge": [
+    {
+      "offered_per_second": 1.0,
+      "requests": 20,
+      "throughput_per_second": 1.0,
+      "statuses": {
+        "200": 20
+      },
+      "p50_ms": 252.10356250681798,
+      "p95_ms": 258.6514604074182,
+      "p99_ms": 276.95165848766914,
+      "max_ms": 281.52670800773194
+    },
+    {
+      "offered_per_second": 2.0,
+      "requests": 40,
+      "throughput_per_second": 2.0,
+      "statuses": {
+        "200": 40
+      },
+      "p50_ms": 249.21364550391445,
+      "p95_ms": 252.7803222536022,
+      "p99_ms": 253.60805037540558,
+      "max_ms": 253.9379580048262
+    },
+    {
+      "offered_per_second": 4.0,
+      "requests": 80,
+      "throughput_per_second": 4.0,
+      "statuses": {
+        "200": 80
+      },
+      "p50_ms": 206.44585450281738,
+      "p95_ms": 212.09523990437447,
+      "p99_ms": 221.48427014632014,
+      "max_ms": 248.13320900284452
+    },
+    {
+      "offered_per_second": 8.0,
+      "requests": 160,
+      "throughput_per_second": 8.0,
+      "statuses": {
+        "200": 160
+      },
+      "p50_ms": 231.34239600403816,
+      "p95_ms": 239.31026285426924,
+      "p99_ms": 250.01940672220366,
+      "max_ms": 274.90945900353836
+    }
+  ],
+  "integrity": {
+    "submissions_sent": 500,
+    "submit_statuses": {
+      "201": 500
+    },
+    "submit_seconds": 42.51853383300477,
+    "submits_per_second": 11.759577645922445,
+    "approval_race_statuses": {
+      "200": 500,
+      "409": 500
+    },
+    "audit_events": {
+      "approved": 500,
+      "submitted": 500
+    },
+    "chain_ok": true,
+    "chain_records": 1000,
+    "chain_reason": "",
+    "healthz_status": 200,
+    "audit_log_bytes": 657058,
+    "every_submission_recorded_once": true,
+    "one_winner_per_race": true
+  },
+  "audit_growth": [
+    {
+      "audit_records": 1020,
+      "submit_p50_ms": 212.6391044985212,
+      "healthz_ms": 7.0247920011752285
+    },
+    {
+      "audit_records": 5020,
+      "submit_p50_ms": 244.21074999918346,
+      "healthz_ms": 39.91587500058813
+    }
+  ]
+}

@@ -7,6 +7,10 @@ export GN_TOKENS="token-a=alice,token-b=bob"
 uv run --extra service uvicorn --factory greeks_neutralizer.service.app:factory --port 8000
 ```
 
+**Run exactly one worker.**
+Proposals and the audit lock live in one process, so a second worker would split the store and fork the audit chain.
+`docs/evidence/phase5/README.md` has the measured capacity.
+
 Open `http://127.0.0.1:8000/` and enter a token.
 
 ## Health
@@ -43,6 +47,15 @@ Open proposals are in memory and are lost on restart, so re-propose them.
 The audit log persists and its chain continues across restarts.
 Back up `GN_AUDIT_LOG` and its sidecar `GN_AUDIT_LOG.head` together, and while the service is stopped, since a log without its matching sidecar fails verification.
 To test a restore, copy both files to a new path and run `verify_audit_log` on the log.
+`scripts/restore_drill.py` runs the whole procedure against real service processes.
+
+A hard crash can land between the log and sidecar writes, which happened in 1 of 5 kills in the drill.
+The service then reports `audit_chain_broken` and refuses work until someone follows the row for it above.
+No acknowledged action was lost in the drill.
+
+Every audited action and every `/healthz` rereads the whole log, at about 8 ms per 1,000 records measured up to 5,000.
+When that matters, stop the service, keep both files as the record, and point `GN_AUDIT_LOG` at a new path.
+The new chain starts from nothing, so keep the old one with its checksums, since nothing links the two.
 
 ## Rotating tokens
 

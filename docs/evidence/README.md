@@ -9,7 +9,7 @@ A gate met only by proxy is reported as open.
 | 2. Listed options analytics | Reconciled with QuantLib and a real chain | **Met**, with limitations | `phase2/` |
 | 3. Optimizer and risk | Independent verification, and stress reviewed | **Met**, with limitations | `phase3/` |
 | 4. Evidence | Out-of-sample report on chains, net of costs | **Open:** proxy only, needs licensed data | `phase4/` |
-| 5. Product | Browser workflow, load test, restore drill, threat model | **Partial** | `phase5/` |
+| 5. Product | Browser workflow, load test, restore drill, threat model | **Met on one machine**, not on a real deployment | `phase5/` |
 | 6. Pilot | Shadow mode, independent validation, pen test | **Not started:** needs people and partners | |
 | 7. Expansion | Futures options, FX, rates, commodities, crypto | **Not started** | |
 

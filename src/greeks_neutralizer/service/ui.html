@@ -60,6 +60,7 @@ td.wrap { white-space: normal; text-align: left; min-width: 260px; }
 .badge.warn { background: var(--warn-bg); color: var(--warn-ink); }
 .badge.bad { background: var(--bad-bg); color: var(--bad-ink); }
 .notice { padding: 10px 12px; border-radius: 6px; margin-top: 10px; overflow-wrap: anywhere; }
+.notice:not(.warn, .bad) { padding: 0; } /* No box to inset from, so it aligns with its panel. */
 .notice.warn { background: var(--warn-bg); color: var(--warn-ink); }
 .notice.bad { background: var(--bad-bg); color: var(--bad-ink); }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }

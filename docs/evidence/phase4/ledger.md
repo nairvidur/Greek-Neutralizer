@@ -19,7 +19,8 @@ An entry is added whenever a variant or an assumption changes.
 | 2 | `7dffb11` | `opt_dgv_cvar` bought 11.6 billion lots and lost $10 trillion, with 318 failed days. Others completed | **Rejected: exposed a defect.** CVaR could be farmed for profit |
 | 3 | `062f33a` | All variants completed, with no failed days | Superseded: results depended on machine load |
 | 4 | `e5d3a9d` | All variants completed, with no failed days. Delta policies identical to run 3, and optimizer policies differed | Superseded: this difference exposed the load dependence |
-| 5 | With the node limit | All variants completed, with no failed days | **Current:** `proxy_backtest.json` |
+| 5 | With the node limit | All variants completed, with no failed days | Superseded by run 6, with identical values |
+| 6 | After the gate, search limit, and repair fixes | All variants completed, with no failed days. Every value identical to run 5 | **Current:** `proxy_backtest.json` |
 
 ## Changes between runs 2 and 3
 

@@ -149,6 +149,8 @@ def main() -> None:
         "groups": [],
     }
     for (book, multiple), results in sorted(groups.items()):
+        # Sorted, because workers finish in any order and the file should not depend on it.
+        results = dict(sorted(results.items()))
         trimmed = {name: _after_warmup(r) for name, r in results.items()}
         comparisons = [
             compare(trimmed[name], trimmed[baseline]).as_dict()

@@ -1,0 +1,92 @@
+{
+  "code_version": "2.0.0a1",
+  "note": "One machine and a local disk. The script's docstring says what is not run.",
+  "restore": {
+    "records_backed_up": 40,
+    "checksums_match": true,
+    "chain_ok_after_restore": true,
+    "records_after_restore": 40,
+    "healthz_after_restore": 200,
+    "seconds_from_restore_to_healthy": 0.6728514999995241,
+    "new_submission_status": 201,
+    "chain_ok_after_new_submission": true,
+    "records_after_new_submission": 41,
+    "healthz_after_second_restart": 200,
+    "passed": true
+  },
+  "damaged_restores": {
+    "cases": {
+      "sidecar_missing": {
+        "healthz": 503,
+        "healthz_status": "audit_chain_broken",
+        "submit": 409,
+        "detail": "the log has 6 records, but its head sidecar is missing",
+        "passed": true
+      },
+      "sidecar_from_an_earlier_time": {
+        "healthz": 503,
+        "healthz_status": "audit_chain_broken",
+        "submit": 409,
+        "detail": "the log is longer than its head sidecar: 6 records present, 5 recorded. Either a write was interrupted after the record was committed, or records were added",
+        "passed": true
+      },
+      "log_truncated": {
+        "healthz": 503,
+        "healthz_status": "audit_chain_broken",
+        "submit": 409,
+        "detail": "tail of the log is missing: 6 records written, 3 present",
+        "passed": true
+      },
+      "record_edited": {
+        "healthz": 503,
+        "healthz_status": "audit_chain_broken",
+        "submit": 409,
+        "detail": "record contents changed",
+        "passed": true
+      }
+    },
+    "passed": true
+  },
+  "crash_recovery": {
+    "attempts": [
+      {
+        "acknowledged": 5,
+        "recorded": 7,
+        "acknowledged_but_lost": 0,
+        "chain_ok": false,
+        "reason": "the log is longer than its head sidecar: 7 records present, 6 recorded. Either a write was interrupted after the record was committed, or records were added"
+      },
+      {
+        "acknowledged": 8,
+        "recorded": 8,
+        "acknowledged_but_lost": 0,
+        "chain_ok": true,
+        "reason": ""
+      },
+      {
+        "acknowledged": 12,
+        "recorded": 12,
+        "acknowledged_but_lost": 0,
+        "chain_ok": true,
+        "reason": ""
+      },
+      {
+        "acknowledged": 14,
+        "recorded": 14,
+        "acknowledged_but_lost": 0,
+        "chain_ok": true,
+        "reason": ""
+      },
+      {
+        "acknowledged": 17,
+        "recorded": 17,
+        "acknowledged_but_lost": 0,
+        "chain_ok": true,
+        "reason": ""
+      }
+    ],
+    "acknowledged_but_lost": 0,
+    "crashes_leaving_a_broken_chain": 1,
+    "passed": true
+  }
+}
