@@ -61,6 +61,7 @@ There were no 5xx responses in any case.
 
 `GET /v1/proposals` was not load tested.
 Its summaries and `limit` postdate this measurement, and so do the solver gates, deployment defaults for gates, and the risk report endpoints, none of which the requests above use.
+The `/v1/stress` row above also predates a change: that endpoint now values the book once more to report its `issues`, about 16% more engine work on the sample book, so the row needs rerunning.
 
 Limits this exposed:
 

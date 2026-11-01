@@ -250,6 +250,7 @@ def _cmd_frontier(args: argparse.Namespace) -> dict[str, Any]:
     from greeks_neutralizer.schema import parse_hedge_request
 
     problem, snapshot, _ = parse_hedge_request(_load(args.request))
+    points = hedge_frontier(problem, snapshot)
     return {
         "frontier": [
             {
@@ -262,8 +263,9 @@ def _cmd_frontier(args: argparse.Namespace) -> dict[str, Any]:
                 "reason": p.unsolved_reason or "",
                 "issues": len(p.issues),
             }
-            for p in hedge_frontier(problem, snapshot)
-        ]
+            for p in points
+        ],
+        "issues": list(dict.fromkeys(issue for p in points for issue in p.issues)),
     }
 
 
@@ -464,6 +466,10 @@ def _run(args: argparse.Namespace, fd: int, encode: Any) -> int:
         return 1
     except GNError as exc:
         _emit(fd, encode({"error": str(exc), "type": type(exc).__name__}))
+        return 1
+    except ArithmeticError as exc:
+        message = f"a calculation on these inputs is out of range: {exc}"
+        _emit(fd, encode({"error": message, "type": type(exc).__name__}))
         return 1
     if args.command == "example":
         _emit(fd, json.dumps(result, indent=2))

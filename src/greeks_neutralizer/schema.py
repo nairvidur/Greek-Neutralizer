@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
@@ -59,6 +59,11 @@ P = ParamSpec("P")
 JsonDict = Mapping[str, Any]
 
 SCHEMA_VERSION = 1
+
+# Wide of any listed product, and far enough inside what a datetime can hold that converting to New
+# York and adding the longest scenario horizon or assignment window cannot overflow.
+_EARLIEST_DATE = datetime(1900, 1, 1, tzinfo=UTC)
+_LATEST_DATE = datetime(2300, 1, 1, tzinfo=UTC)
 
 
 def _typed_errors(parse: Callable[P, T]) -> Callable[P, T]:
@@ -117,6 +122,8 @@ def _datetime(value: Any, name: str) -> datetime:
         raise ValidationError(f"{name}: {exc}") from exc
     if parsed.tzinfo is None:
         raise ValidationError(f"{name} must include a UTC offset, got {value!r}")
+    if not _EARLIEST_DATE <= parsed <= _LATEST_DATE:
+        raise ValidationError(f"{name} must be from 1900 to 2300, got {value!r}")
     return parsed
 
 

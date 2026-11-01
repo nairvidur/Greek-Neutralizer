@@ -7,7 +7,7 @@ This is alpha software, and **it has not been used to hedge real money.**
 
 - **No historical option chain backtest.** That needs licensed data. The proxy backtest uses real index, VIX, and rate history with modeled option prices, which likely overstates option hedge effectiveness. See `docs/evidence/phase4/`.
 - **No live or paper pilot, and no reconciliation to broker or clearing statements.**
-- **No independent validation.** The two reviews here were automated, and only one day's real chain has been reconciled.
+- **No independent validation.** Every review here was automated, and only one day's real chain has been reconciled.
 
 ## Models
 

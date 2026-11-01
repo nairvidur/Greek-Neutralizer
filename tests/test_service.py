@@ -13,6 +13,7 @@ from greeks_neutralizer.examples import (
     example_market,
     example_request,
 )
+from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.service.app import _clean, _parse_tokens, create_app
 
 ALICE = {"Authorization": "Bearer a-token"}
@@ -112,6 +113,21 @@ def test_stress_and_grid(client):
     assert len(data["pnl"]) == len(data["spot_shocks"])
     assert len(data["pnl"][0]) == len(data["vol_shocks"])
 
+    # Black-Scholes by closed form: short 10 of the 100 call and 10 of the 95 put, 30 days, 5%, 25%.
+    def book_value(spot, vol):
+        call = black_greeks(spot, 100.0, 30 / 365, 0.05, 0.0, vol, 1).price[0]
+        put = black_greeks(spot, 95.0, 30 / 365, 0.05, 0.0, vol, -1).price[0]
+        return -10 * 100 * (call + put)
+
+    start = book_value(100.0, 0.25)
+    cell = lambda spot, vol: data["pnl"][data["spot_shocks"].index(spot)][  # noqa: E731
+        data["vol_shocks"].index(vol)
+    ]
+    assert cell(0.0, 0.0) == pytest.approx(0.0, abs=1e-9)
+    assert cell(-0.1, 0.05) == pytest.approx(book_value(90.0, 0.30) - start, rel=1e-6)
+    assert cell(0.05, 0.0) == pytest.approx(book_value(105.0, 0.25) - start, rel=1e-6)
+    assert cell(0.1, 0.2) == pytest.approx(book_value(110.0, 0.45) - start, rel=1e-6)
+
 
 def test_hedge_endpoint_returns_a_verified_proposal(client):
     response = client.post("/v1/hedge", headers=ALICE, json=quick_request())
@@ -130,12 +146,12 @@ def test_frontier_endpoint(client):
 @pytest.mark.parametrize(
     ("mutate", "fragment"),
     [
-        (lambda r: r.update(typo=1), "unknown field"),
-        (lambda r: r["market"].update(as_of="2026-01-05T15:00:00"), "UTC offset"),
+        (lambda r: r.update(typo=1), "unknown field(s) ['typo']"),
+        (lambda r: r["market"].update(as_of="2026-01-05T15:00:00"), "as_of must include a UTC"),
         (lambda r: r["book"][0].update(quantity="ten"), "signed int"),
         (
             lambda r: r["market"]["underlyings"]["XYZ"].update(spot=float("nan")),
-            "",
+            "spot",
         ),
     ],
     ids=["typo", "naive", "qty", "nan-spot"],

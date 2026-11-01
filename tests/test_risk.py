@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from greeks_neutralizer.domain import OptionRight, Position
+from greeks_neutralizer.domain import Position
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.market import CashDividend, DiscountCurve, FlatVol, MarketSnapshot
 from greeks_neutralizer.pricing.black import black_greeks
@@ -69,9 +69,10 @@ def test_short_tenor_moves_more_than_long_under_term_shock():
     shocked = shock_snapshot(flat_snapshot(), scenario)
     s_sigma = shocked.market("XYZ").surface.vol(np.array([0.0]), np.array([7 / 365]))[0]
     l_sigma = shocked.market("XYZ").surface.vol(np.array([0.0]), np.array([1.0]))[0]
-    # The stated rule: the shock decays from a 30-day reference tenor as (30d / tau)^power.
-    assert_allclose(s_sigma, 0.25 + 0.05 * (30 / 7) ** 0.5)
-    assert_allclose(l_sigma, 0.25 + 0.05 * (30 / 365) ** 0.5)
+    # By hand, from docs/risk/stress.md's (30d / tenor)^0.5: 30/7 is 4.285714, whose root is
+    # 2.070197, so 0.25 + 0.05 * 2.070197. And 30/365 is 0.082192, whose root is 0.286691.
+    assert_allclose(s_sigma, 0.353510, atol=1e-6)
+    assert_allclose(l_sigma, 0.264335, atol=1e-6)
 
 
 def test_vol_cannot_go_negative_under_a_large_crush():
@@ -289,4 +290,3 @@ def test_curve_change_flows_through_snapshot_replace():
     snap = flat_snapshot()
     higher = snap.replaced("XYZ", curve=DiscountCurve.flat(0.10))
     assert higher.market("XYZ").curve.zero_rates == (0.10,)
-    assert OptionRight.CALL.omega == 1

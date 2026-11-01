@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -13,10 +15,11 @@ import pytest
 
 from greeks_neutralizer._version import __version__
 from greeks_neutralizer.cli import main
+from greeks_neutralizer.domain import OptionContract, OptionRight
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.examples import example_book, example_market, example_request
 from greeks_neutralizer.hedging.optimizer import solve_hedge
-from greeks_neutralizer.hedging.problem import ProposalStatus
+from greeks_neutralizer.hedging.problem import HedgeLeg, ProposalStatus
 from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, book_scenario_pnl
 from greeks_neutralizer.schema import (
     parse_book,
@@ -334,7 +337,9 @@ def test_rejection_needs_a_reason_and_is_idempotent(store, proposal):
     with pytest.raises(ValidationError, match="reason"):
         store.reject(record.id, "bob", "  ")
     store.reject(record.id, "bob", "no")
+    records = store.audit.path.read_text().splitlines()
     assert store.reject(record.id, "bob", "no").state is State.REJECTED
+    assert store.audit.path.read_text().splitlines() == records
 
 
 def test_repeat_approval_is_a_no_op(store, proposal):
@@ -346,8 +351,6 @@ def test_repeat_approval_is_a_no_op(store, proposal):
 
 
 def test_unstable_proposal_cannot_be_approved(store, proposal):
-    from dataclasses import replace
-
     unstable = replace(proposal, status=ProposalStatus.UNSTABLE)
     record = store.submit(unstable, "alice")
     with pytest.raises(WorkflowError, match="unstable"):
@@ -355,8 +358,6 @@ def test_unstable_proposal_cannot_be_approved(store, proposal):
 
 
 def test_failed_verification_cannot_be_submitted(store, proposal):
-    from dataclasses import replace
-
     bad = replace(proposal, verification=replace(proposal.verification, passed=False))
     with pytest.raises(WorkflowError, match="verification"):
         store.submit(bad, "alice")
@@ -406,6 +407,28 @@ def test_audit_chain_continues_after_restart(tmp_path, proposal):
     assert check.records == 2
 
 
+def test_ticket_side_quantity_and_limit_are_what_the_legs_say(proposal):
+    # Hand-built: buy 5 at 1.25 and sell 3 at 1.10, in the units a broker reads them.
+    contract = OptionContract("XYZ", OptionRight.CALL, 100.0, AS_OF + timedelta(days=30))
+    legs = (
+        HedgeLeg(contract, 5, 1.25, 625.0, 2.0, "buy"),
+        HedgeLeg(contract, -3, 1.10, -330.0, 1.2, "sell"),
+    )
+    subject = replace(proposal, legs=legs)
+    rows = list(csv.DictReader(io.StringIO(tickets_csv(subject, "abc"))))
+    assert [(r["side"], r["quantity"], r["limit_price"]) for r in rows] == [
+        ("BUY", "5", "1.25"),
+        ("SELL", "3", "1.1"),
+    ]
+    messages = tickets_fix(subject, "abcdefghij", AS_OF).strip().splitlines()
+    fields = [dict(part.split("=") for part in m.rstrip("|").split("|")) for m in messages]
+    # FIX 4.4: Side 1 is buy and 2 is sell, with OrderQty unsigned and Price at four places here.
+    assert [(f["54"], f["38"], f["44"]) for f in fields] == [
+        ("1", "5", "1.2500"),
+        ("2", "3", "1.1000"),
+    ]
+
+
 def test_missing_audit_log_is_empty_and_ok(tmp_path):
     assert verify_audit_log(tmp_path / "none.jsonl").ok
 
@@ -413,6 +436,7 @@ def test_missing_audit_log_is_empty_and_ok(tmp_path):
 def test_tickets_match_the_proposal(proposal):
     text = tickets_csv(proposal, "abc")
     rows = text.strip().splitlines()
+    assert proposal.legs
     assert len(rows) == len(proposal.legs) + 1
     assert rows[0].startswith("proposal_id,side,quantity")
     fix = tickets_fix(proposal, "abcdefghij", AS_OF).strip().splitlines()

@@ -7,6 +7,8 @@ instrument's definition for scenario P&L, and constructed quote and audit states
 from __future__ import annotations
 
 import copy
+import csv
+import io
 import json
 import math
 import threading
@@ -165,10 +167,22 @@ def test_stock_ticket_has_no_maturity(proposal):
     assert "231" not in fields
 
 
-def test_csv_ticket_cells_cannot_start_a_formula(proposal):
+@pytest.mark.parametrize("symbol", ["=1+1", "+1", "-1", "@SUM(A1)", "=HYPERLINK(1)", "A,B", "A B"])
+def test_csv_ticket_cells_cannot_start_a_formula(symbol):
+    # Spreadsheets run a cell starting = + - or @. The ticket writes symbols as they are, so such a
+    # symbol must never become an instrument, by any of the three fields a ticket prints.
+    with pytest.raises(ValidationError):
+        LinearInstrument(symbol, "XYZ")
+    with pytest.raises(ValidationError):
+        LinearInstrument("XYZ", symbol)
+    with pytest.raises(ValidationError):
+        option(root=symbol)
+
+
+def test_csv_ticket_prints_the_symbols_a_trader_expects(proposal):
     legs = (_leg(option(root="SPXW")), _leg(LinearInstrument("^VIX", "^VIX")))
-    rows = tickets_csv(replace(proposal, legs=legs), "abc").splitlines()[1:]
-    assert all(row.split(",")[3][0] not in "=+-@" for row in rows)
+    rows = list(csv.DictReader(io.StringIO(tickets_csv(replace(proposal, legs=legs), "abc"))))
+    assert [row["symbol"] for row in rows] == ["SPXW", "^VIX"]
 
 
 @pytest.mark.parametrize(
@@ -427,6 +441,8 @@ def test_verification_beside_appends_never_raises_a_false_alarm(tmp_path):
     log = _seed(tmp_path / "a.jsonl")
     failures: list[object] = []
     done = threading.Event()
+    checks = [threading.Event(), threading.Event()]
+    verified = [0]
 
     def verify() -> None:
         while not done.is_set():
@@ -434,18 +450,28 @@ def test_verification_beside_appends_never_raises_a_false_alarm(tmp_path):
                 check = log.verify()
             except Exception as exc:
                 failures.append(exc)
-                return
+                break
             if not check.ok:
                 failures.append(check)
-                return
+                break
+            verified[0] += 1
+            if verified[0] <= len(checks):
+                checks[verified[0] - 1].set()
+        for event in checks:
+            event.set()
 
     worker = threading.Thread(target=verify)
     worker.start()
+    assert checks[0].wait(30.0)
+    before = verified[0]
     for n in range(100):
         log.append("event", "alice", {"n": n}, DEFAULT_AS_OF)
+    assert checks[1].wait(30.0)
     done.set()
     worker.join()
     assert failures == []
+    assert before >= 1
+    assert verified[0] >= 2
 
 
 def test_crash_before_the_head_is_replaced_keeps_it_readable_and_is_named(tmp_path, monkeypatch):

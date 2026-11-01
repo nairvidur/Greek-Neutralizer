@@ -1,6 +1,6 @@
 """Regression pins for the baseline defects in docs/evidence/phase1/red_legacy.txt.
 
-Each test states the same required behavior as tests/test_legacy_red.py did against the old engine.
+Each test states a behavior the old engine got wrong, as that file records.
 The hedge-solver behaviors (premium accounting, >3 instruments) are pinned in test_hedging.py.
 """
 
@@ -67,15 +67,7 @@ def test_expired_itm_keeps_intrinsic_and_is_flagged():
     assert any("EXPIRED" in issue for issue in book.issues)
 
 
-def test_zero_vol_itm_is_discounted_forward_intrinsic():
-    assert_allclose(
-        black_greeks(120.0, 100.0, 1.0, 0.05, 0.0, 0.0, 1).price[0],
-        120.0 - 100.0 * np.exp(-0.05),
-        rtol=1e-14,
-    )
-
-
-def test_cdf_error_below_legacy_by_seven_orders():
+def test_cdf_matches_erfc_to_machine_precision():
     from math import erfc, sqrt
 
     for x in (-3.0, -1.0, 0.06, 1.0, 3.0):

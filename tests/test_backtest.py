@@ -176,9 +176,6 @@ def test_decisions_cannot_see_the_future():
     # Changing every price after day k must not change any decision made through day k.
     decisions = []
 
-    class Recording(DeltaDaily):
-        pass
-
     class Spy:
         name = "spy"
 

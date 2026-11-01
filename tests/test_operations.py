@@ -6,7 +6,7 @@ working, and hold the service to what the runbook promises about backup, restore
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import socket
 import subprocess
@@ -65,14 +65,59 @@ def test_restore_drill_recovers_and_refuses_damaged_backups(tmp_path: Path) -> N
     assert code == 0
 
 
+def _script(monkeypatch: pytest.MonkeyPatch, name: str) -> Any:
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    return importlib.import_module(name)
+
+
+def _record_started(monkeypatch: pytest.MonkeyPatch, load_test: Any) -> list[Any]:
+    started: list[Any] = []
+    real_start = load_test.start_service
+
+    def start(*args: Any) -> Any:
+        started.append(real_start(*args))
+        return started[-1]
+
+    monkeypatch.setattr(load_test, "start_service", start)
+    return started
+
+
+def test_a_service_that_never_becomes_ready_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    load_test = _script(monkeypatch, "load_test")
+    started = _record_started(monkeypatch, load_test)
+    monkeypatch.setattr(load_test, "READY_TIMEOUT_SECONDS", 3.0)
+    with (
+        pytest.raises(RuntimeError, match="not ready"),
+        load_test.running_service(tmp_path / "audit.jsonl", frozenset({418})),
+    ):
+        pytest.fail("a service that never answered as accepted must not be yielded")
+    assert len(started) == 1
+    assert started[0].poll() is not None
+
+
+def test_a_crash_drill_that_fails_early_stops_its_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    load_test = _script(monkeypatch, "load_test")
+    restore_drill = _script(monkeypatch, "restore_drill")
+    started = _record_started(monkeypatch, load_test)
+
+    def fail(_: Any) -> None:
+        raise RuntimeError("the drill failed before its crash")
+
+    monkeypatch.setattr(restore_drill, "_hedge_request", fail)
+    with pytest.raises(RuntimeError, match="before its crash"):
+        restore_drill.crash_recovery(tmp_path, 1)
+    assert len(started) == 1
+    assert started[0].poll() is not None
+
+
 def test_a_port_taken_before_the_bind_starts_again_on_a_new_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec = importlib.util.spec_from_file_location("load_test", ROOT / "scripts" / "load_test.py")
-    assert spec is not None
-    assert spec.loader is not None
-    load_test = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(load_test)
+    load_test = _script(monkeypatch, "load_test")
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()

@@ -278,12 +278,21 @@ def hedge_frontier(
             penalized_residual=_penalized_residual(problem.targets, dict(book.by_underlying)),
             worst_scenario_pnl=_worst(before_scenarios),
             proposal=None,
+            issues=book.issues,
         )
     ]
     delta_only = _delta_only_problem(problem)
     if delta_only is not None:
         points.append(
-            _point("delta only", None, delta_only, snapshot, problem.targets, gate_baseline)
+            _point(
+                "delta only",
+                None,
+                delta_only,
+                snapshot,
+                problem.targets,
+                gate_baseline,
+                book.issues,
+            )
         )
     for aversion in risk_aversions:
         adjusted = replace(problem, config=replace(problem.config, risk_aversion=aversion))
@@ -295,6 +304,7 @@ def hedge_frontier(
                 snapshot,
                 problem.targets,
                 gate_baseline,
+                book.issues,
             )
         )
     return tuple(points)
@@ -325,6 +335,7 @@ def _point(
     snapshot: MarketSnapshot,
     report_targets: Sequence[GreekTarget],
     gate_baseline: HedgeConfig | None,
+    book_issues: tuple[str, ...],
 ) -> FrontierPoint:
     from greeks_neutralizer.hedging.optimizer import solve_hedge
 
@@ -332,15 +343,27 @@ def _point(
         proposal = solve_hedge(problem, snapshot, gate_baseline=gate_baseline)
     except HedgeInfeasibleError as exc:
         reason = "; ".join(exc.binding) or str(exc)
-        return _unsolved_point(label, aversion, "infeasible", reason)
+        return _unsolved_point(label, aversion, "infeasible", reason, book_issues)
     except SearchLimitError as exc:
-        return _unsolved_point(label, aversion, "search_limit", str(exc))
+        return _unsolved_point(label, aversion, "search_limit", str(exc), book_issues)
     return _from_proposal(label, aversion, proposal, report_targets)
 
 
-def _unsolved_point(label: str, aversion: float | None, status: str, reason: str) -> FrontierPoint:
+def _unsolved_point(
+    label: str, aversion: float | None, status: str, reason: str, issues: tuple[str, ...]
+) -> FrontierPoint:
     return FrontierPoint(
-        label, aversion, 0.0, 0, 0, float("nan"), None, None, unsolved_reason=reason, status=status
+        label,
+        aversion,
+        0.0,
+        0,
+        0,
+        float("nan"),
+        None,
+        None,
+        unsolved_reason=reason,
+        status=status,
+        issues=issues,
     )
 
 

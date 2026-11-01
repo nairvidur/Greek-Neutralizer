@@ -286,7 +286,7 @@ def test_a_liquidity_line_with_an_unknown_field_is_refused(tmp_path):
     line = {"instrument": STOCK, "quantity": 1, "half_spread": 0.01, "adv_contracts": 1, "x": 1}
     response = _client(tmp_path).post("/v1/liquidity", headers=ALICE, json={"lines": [line]})
     assert response.status_code == 422
-    assert "x" in response.json()["error"]
+    assert "unknown field(s) ['x']" in response.json()["error"]
 
 
 def test_decay_shows_an_option_expiring_and_shares_staying_put(tmp_path):
@@ -552,12 +552,129 @@ def test_a_huge_horizon_is_a_structured_cli_error(tmp_path, capfd, days):
 @pytest.mark.parametrize(
     ("path", "extra"), [("/v1/stress", {}), ("/v1/decay", {"underlying": "XYZ"})]
 )
-def test_a_horizon_past_the_last_date_is_a_422(tmp_path, path, extra):
+def test_a_market_date_with_no_room_for_a_horizon_is_a_422(tmp_path, path, extra):
     market = {**example_market(), "as_of": "9999-12-30T15:00:00+00:00"}
     payload = {"book": HUNDRED_SHARES, "market": market, **extra}
     response = _client(tmp_path).post(path, headers=ALICE, json=payload)
     assert response.status_code == 422
-    assert "not a date" in response.json()["error"]
+    assert "as_of must be from 1900 to 2300" in response.json()["error"]
+
+
+# These overflow on conversion to UTC or New York, which every report does.
+BOUNDARY_DATES = ["9999-12-31T23:59:59-12:00", "0001-01-01T00:00:00+14:00", "1899-12-31T00:00:00Z"]
+
+
+@pytest.mark.parametrize("path", ["/v1/value", "/v1/ladder", "/v1/stress", "/v1/grid"])
+@pytest.mark.parametrize("expiry", BOUNDARY_DATES)
+def test_an_expiry_past_either_end_of_time_is_a_422(tmp_path, path, expiry):
+    option = {**example_book()[0]["instrument"], "expiry": expiry}
+    payload = {"book": [{"instrument": option, "quantity": 1}], "market": example_market()}
+    response = _client(tmp_path).post(path, headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "expiry must be from 1900 to 2300" in response.json()["error"]
+
+
+def test_a_short_american_call_on_a_far_market_date_is_a_422(tmp_path):
+    # The assignment window adds 7 days to as_of, which ran off the end of the calendar here.
+    call = {**example_book()[0]["instrument"], "style": "american", "strike": 50.0}
+    call["expiry"] = "9999-12-31T00:00:00+00:00"
+    market = {**example_market(), "as_of": "9999-12-30T15:00:00+00:00"}
+    payload = {"book": [{"instrument": call, "quantity": -1}], "market": market}
+    assert _client(tmp_path).post("/v1/value", headers=ALICE, json=payload).status_code == 422
+
+
+@pytest.mark.parametrize("command", ["value", "ladder"])
+def test_an_expiry_past_the_end_of_time_is_a_structured_cli_error(tmp_path, capfd, command):
+    option = {**example_book()[0]["instrument"], "expiry": BOUNDARY_DATES[0]}
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps([{"instrument": option, "quantity": 1}]))
+    market = tmp_path / "market.json"
+    market.write_text(json.dumps(example_market()))
+    assert main([command, "--book", str(book), "--market", str(market)]) == 1
+    out = capfd.readouterr().out
+    assert out.startswith("error:")
+    assert "expiry must be from 1900 to 2300" in out
+
+
+def test_the_last_day_allowed_still_values_every_horizon(tmp_path):
+    # The far end of the window, and the longest horizon on top of it, must both be real dates.
+    option = {**example_book()[0]["instrument"], "expiry": "2300-01-01T00:00:00+00:00"}
+    market = {**example_market(), "as_of": "2300-01-01T00:00:00+00:00"}
+    payload = {
+        "book": [{"instrument": option, "quantity": 1}],
+        "market": market,
+        "underlying": "XYZ",
+        "days": [36_525],
+    }
+    assert _client(tmp_path).post("/v1/decay", headers=ALICE, json=payload).status_code == 200
+
+
+# A quantity far past what a float can hold reaches arithmetic the parser does not do.
+ENORMOUS = 10**400
+
+
+def test_arithmetic_out_of_range_on_inputs_is_a_422(tmp_path):
+    payload = {
+        "book": [{"instrument": STOCK, "quantity": ENORMOUS}],
+        "market": example_market(),
+    }
+    response = _client(tmp_path).post("/v1/value", headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "out of range" in response.json()["error"]
+
+
+def test_arithmetic_out_of_range_on_inputs_is_a_structured_cli_error(tmp_path, capfd):
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps([{"instrument": STOCK, "quantity": ENORMOUS}]))
+    market = tmp_path / "market.json"
+    market.write_text(json.dumps(example_market()))
+    assert main(["value", "--book", str(book), "--market", str(market)]) == 1
+    out = capfd.readouterr().out
+    assert out.startswith("error:")
+    assert "out of range" in out
+
+
+# --- Every frontier point names the book's issues -------------------------------------------------
+
+
+def _options_only_frontier_request(**target):
+    request = example_request()
+    option = {**example_book()[0]["instrument"]}
+    option["expiry"] = (DEFAULT_AS_OF - timedelta(days=1)).isoformat()
+    request["book"] = [*example_book(), {"instrument": option, "quantity": -1}]
+    request["candidates"] = [
+        c for c in request["candidates"] if c["instrument"]["type"] == "option"
+    ]
+    request["targets"] = [{"underlying": "XYZ", "greek": "delta_dollars", **target}]
+    return request
+
+
+@pytest.mark.parametrize(
+    "target",
+    [{"lower": 1e12, "upper": 2e12}, {}],
+    ids=["every-solve-infeasible", "every-solve-solved"],
+)
+def test_every_frontier_point_names_an_expired_option(tmp_path, target):
+    request = _options_only_frontier_request(**target)
+    response = _client(tmp_path).post("/v1/frontier", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    points = response.json()["points"]
+    # 7 risk aversions, the do-nothing baseline, and no delta-only point with no linear candidate.
+    assert len(points) == 8
+    assert points[0]["label"] == "do nothing"
+    assert "delta only" not in [point["label"] for point in points]
+    for point in points:
+        assert any(issue.startswith("EXPIRED") for issue in point["issues"]), point["label"]
+    if target:
+        assert all(p["status"] == "infeasible" for p in points[1:])
+
+
+def test_the_cli_frontier_prints_the_issues_themselves(tmp_path, capfd):
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_options_only_frontier_request(lower=1e12, upper=2e12)))
+    assert main(["frontier", "--request", str(path)]) == 0
+    out = capfd.readouterr().out
+    assert out.count("EXPIRED") == 1
 
 
 def test_the_longest_horizon_allowed_still_values_a_book():

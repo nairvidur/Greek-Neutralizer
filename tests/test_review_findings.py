@@ -325,13 +325,29 @@ def test_default_gamma_weight_is_the_pnl_of_a_3pct_move():
 
 def test_no_displayed_size_on_one_side_blocks_that_side():
     contract = euro("call", 105, 60)
-    no_offer = HedgeCandidate(contract, Quote(1.0, 1.1, 100, 0, AS_OF))
-    problem = HedgeProblem(
-        (Position(euro("call", 100, 30), -10),),
-        (no_offer,),
-        (GreekTarget("XYZ", GreekName.VEGA, weight=10.0),),
-    )
-    assert solve_hedge(problem, snapshot_with()).legs == ()
+    # A fair quote, so that nothing but its size can keep it out of the hedge.
+    fair_value = value_options([contract], snapshot_with()).greeks.price[0]
+
+    def hedge(book_quantity, bid_size, ask_size, **caps):
+        quote = Quote(fair_value - 0.05, fair_value + 0.05, bid_size, ask_size, AS_OF)
+        return solve_hedge(
+            HedgeProblem(
+                (Position(euro("call", 100, 30), book_quantity),),
+                (HedgeCandidate(contract, quote, **caps),),
+                (GreekTarget("XYZ", GreekName.VEGA, weight=10.0),),
+            ),
+            snapshot_with(),
+        )
+
+    # A short vega book buys this option, and a long one sells it, when the size is there.
+    assert [leg.side for leg in hedge(-10, 100, 100).legs] == ["BUY"]
+    assert [leg.side for leg in hedge(10, 100, 100).legs] == ["SELL"]
+    for book_quantity, bid_size, ask_size in ((-10, 100, 0), (10, 0, 100)):
+        # Allowing depth does not help: with nothing displayed, there is no market to go deep into.
+        for caps in ({}, {"max_buy": 100, "max_sell": 100}):
+            blocked = hedge(book_quantity, bid_size, ask_size, **caps)
+            assert blocked.legs == ()
+            assert blocked.excluded == ()
 
 
 def test_a_source_without_sizes_can_still_trade_when_policy_allows():
@@ -414,6 +430,20 @@ def test_tree_discounts_dividends_on_the_curve():
     eu = value_options([european_call], snap)
     gap = am.greeks.price[0] - eu.greeks.price[0]
     assert_allclose(gap, am.exercise_premium[0], atol=2e-3)
+    # The same cash flows in another form: one flat rate at the contract's own zero rate, with each
+    # dividend's amount scaled to keep its PV on the curve. They are one option, so the tree must
+    # price them alike. A tree discounting the curve case's dividends at the flat rate would not.
+    expiry_t = calendar_years(AS_OF, american_call.expiry)
+    flat_rate = -np.log(float(curve.discount(expiry_t))) / expiry_t
+    restated = []
+    for dividend in divs:
+        t = calendar_years(AS_OF, dividend.ex_date)
+        pv = dividend.amount * float(curve.discount(t))
+        restated.append(CashDividend(dividend.ex_date, pv * np.exp(flat_rate * t)))
+    flat_snap = snapshot_with(curve=DiscountCurve.flat(flat_rate), dividends=tuple(restated))
+    flat_am = value_options([american_call], flat_snap)
+    assert_allclose(am.greeks.price[0], flat_am.greeks.price[0], rtol=1e-9)
+    assert_allclose(am.exercise_premium[0], flat_am.exercise_premium[0], rtol=1e-7)
 
 
 def test_european_theta_and_rho_include_the_dividend_pv():

@@ -275,14 +275,17 @@ function renderGrid(g) {
 }
 
 function renderFrontier(data) {
-  $("frontierOut").innerHTML = table(["Choice", "Status", "Cost", "Legs", "Residual", "Worst stress"],
+  const issues = [...new Set(data.points.flatMap((p) => p.issues))];
+  $("frontierOut").innerHTML = table(["Choice", "Status", "Cost", "Legs", "Residual", "Worst stress", "Issues"],
     data.points.map((p) => p.unsolved_reason
       ? [`<td>${escapeHtml(p.label)}</td>`, `<td><span class="badge bad">${escapeHtml(p.status.replace("_", " "))}</span></td>`,
-         `<td class="wrap" colspan="4">${escapeHtml(p.unsolved_reason)}</td>`]
+         `<td class="wrap" colspan="4">${escapeHtml(p.unsolved_reason)}</td>`, `<td>${p.issues.length}</td>`]
       : [`<td>${escapeHtml(p.label)}</td>`,
          `<td>${p.status ? statusBadge(p.status) : '<span class="tag">baseline</span>'}</td>`,
          `<td>${fmt(p.transaction_cost, 2)}</td>`, `<td>${p.n_legs}</td>`,
-         `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`]), [1]);
+         `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`,
+         `<td>${p.issues.length}</td>`]), [1])
+    + issues.map((i) => `<div class="notice warn">${escapeHtml(i)}</div>`).join("");
 }
 
 const opened = new Set();

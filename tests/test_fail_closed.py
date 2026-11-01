@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import threading
 from dataclasses import replace
@@ -291,13 +290,11 @@ def test_hedge_that_breaks_a_band_after_a_small_move_is_unstable():
 def test_stability_perturbs_the_market_without_tripping_the_quote_gate():
     # Re-solves shock the market with quotes held fixed, so model and quotes differ on purpose.
     # Found by the benchmark: this raised "model and quotes disagree" and aborted a good proposal.
-    vega_of = {}
     universe = []
     for strike in (80.0, 85.0, 90.0, 95.0, 105.0, 110.0, 115.0, 120.0):
         right = "put" if strike < 100 else "call"
         candidate = fair(right, strike, 30, half=0.01)
         universe.append(candidate)
-        vega_of[strike] = candidate.quote.mid
     p = solve_hedge(
         HedgeProblem(BOOK, (stock(), *universe), DGV),
         flat_snapshot(),
@@ -414,20 +411,35 @@ def test_deleting_the_log_is_detected(tmp_path):
 @pytest.mark.parametrize("first", ["approve", "reject"])
 def test_approve_and_reject_cannot_both_win_a_race(store, monkeypatch, first):
     record = store.submit(_verified_proposal(), "alice")
-    # Each thread reaching its audit write waits here for the other. If the store's lock does its
-    # job the other can never arrive, so the wait times out and exactly one decision is written.
-    # Without the lock both pass the state check, meet here, and both are written.
-    meeting = threading.Barrier(2, timeout=1.0)
-    real_append = store.audit.append
+    # The first decision holds at its audit write until the second has either blocked on the store's
+    # lock, which is the correct outcome, or got past its state check to its own audit write, which
+    # is what happens if the lock is gone, and then both are written. No clock decides anything.
     in_write = threading.Event()
+    second_arrived = threading.Event()
+    real_append = store.audit.append
+
+    class WatchedLock:
+        def __init__(self, lock):
+            self.lock = lock
+
+        def __enter__(self):
+            if not self.lock.acquire(blocking=False):
+                second_arrived.set()
+                self.lock.acquire()
+
+        def __exit__(self, *exc):
+            self.lock.release()
 
     def append(event, *args, **kwargs):
         if event in {"approved", "rejected"}:
-            in_write.set()
-            with contextlib.suppress(threading.BrokenBarrierError):
-                meeting.wait()
+            if threading.current_thread() is threads[0]:
+                in_write.set()
+                assert second_arrived.wait(30.0)
+            else:
+                second_arrived.set()
         return real_append(event, *args, **kwargs)
 
+    store._lock = WatchedLock(store._lock)
     monkeypatch.setattr(store.audit, "append", append)
     actions = {
         "approve": lambda: store.approve(record.id, "bob"),

@@ -31,5 +31,6 @@ That is a departure from running the phases strictly in order.
 
 ## Reviews
 
-Two independent automated reviews made 47 findings, with some overlap, all with reproductions, and each has a test.
+The first two independent automated reviews made 47 findings, with some overlap, all with reproductions, and each has a test.
+Later automated review rounds on this branch made more findings, which are not counted in that figure, with tests in `tests/test_third_review.py`, `tests/test_fourth_review.py`, and `tests/test_fifth_review.py`.
 No human has reviewed this code.

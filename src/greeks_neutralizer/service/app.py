@@ -279,6 +279,12 @@ def create_app(
     async def bad_data(_: Request, exc: MarketDataError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "type": "market_data"}, 422)
 
+    @app.exception_handler(ArithmeticError)
+    async def out_of_range(_: Request, exc: ArithmeticError) -> JSONResponse:
+        logger.warning("arithmetic error on request inputs: %s", exc)
+        message = f"a calculation on these inputs is out of range: {exc}"
+        return JSONResponse({"error": message, "type": "validation"}, 422)
+
     @app.exception_handler(WorkflowError)
     async def workflow_error(_: Request, exc: WorkflowError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "type": "workflow"}, 409)

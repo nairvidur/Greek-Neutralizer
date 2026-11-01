@@ -98,11 +98,22 @@ def wait_until_answering(
     raise RuntimeError(f"the service was not ready within {READY_TIMEOUT_SECONDS:.0f}s")
 
 
+def stop_service(process: subprocess.Popen[bytes]) -> None:
+    """SIGTERM, then SIGKILL if it does not exit in time. Safe on a process already gone."""
+    process.send_signal(signal.SIGTERM)
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def start_on_a_free_port(
     audit_log: Path, output: Any, accepted: frozenset[int]
 ) -> tuple[subprocess.Popen[bytes], str]:
     """A started service and its base URL. A port can be taken between finding it and binding it,
-    so a failed bind starts again on a new port. Any other failure raises at once."""
+    so a failed bind starts again on a new port. Any other failure raises at once. A process that
+    fails to start is always stopped, so the caller owns only one that started."""
     for attempt in range(1, START_ATTEMPTS + 1):
         port = free_port()
         output.seek(0)
@@ -111,8 +122,9 @@ def start_on_a_free_port(
         base = f"http://127.0.0.1:{port}"
         try:
             wait_until_answering(base, process, output, accepted)
-        except PortTakenError:
-            if attempt == START_ATTEMPTS:
+        except BaseException as exc:
+            stop_service(process)
+            if not isinstance(exc, PortTakenError) or attempt == START_ATTEMPTS:
                 raise
         else:
             return process, base
@@ -127,12 +139,7 @@ def running_service(audit_log: Path, accepted: frozenset[int] = frozenset({200})
         try:
             yield base
         finally:
-            process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            stop_service(process)
 
 
 def client(base: str, actor: str = "alice") -> httpx2.Client:

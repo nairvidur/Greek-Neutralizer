@@ -217,25 +217,32 @@ def crash_recovery(work: Path, crashes: int) -> dict[str, Any]:
         log.parent.mkdir()
         with tempfile.TemporaryFile() as output:
             process, base = start_on_a_free_port(log, output, frozenset({200}))
-            with client(base) as http:
-                request = _hedge_request(http)
+            try:
+                with client(base) as http:
+                    request = _hedge_request(http)
 
-            acknowledged: list[str] = []
-            lock = threading.Lock()
-            with ThreadPoolExecutor(8) as pool:
-                futures = [
-                    pool.submit(_submit_until_dead, base, request, acknowledged, lock)
-                    for _ in range(8)
-                ]
-                # A crash before anything was acknowledged would prove nothing. The count varies, so
-                # that the kill lands in different places.
-                deadline = time.monotonic() + ACKNOWLEDGE_TIMEOUT_SECONDS
-                while len(acknowledged) < 5 + 3 * attempt and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                acknowledged: list[str] = []
+                lock = threading.Lock()
+                with ThreadPoolExecutor(8) as pool:
+                    futures = [
+                        pool.submit(_submit_until_dead, base, request, acknowledged, lock)
+                        for _ in range(8)
+                    ]
+                    # A crash before anything was acknowledged would prove nothing. The count
+                    # varies, so that the kill lands in different places. The submitters stop only
+                    # when the service dies, so it must die before the pool waits for them.
+                    try:
+                        deadline = time.monotonic() + ACKNOWLEDGE_TIMEOUT_SECONDS
+                        while len(acknowledged) < 5 + 3 * attempt and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                    finally:
+                        process.kill()
+                        process.wait()
+                    for future in futures:
+                        future.result()
+            finally:
                 process.kill()
                 process.wait()
-                for future in futures:
-                    future.result()
 
         check = verify_audit_log(log)
         recorded = set(_record_ids(log))

@@ -60,7 +60,7 @@ These reprice from the request and store nothing:
 | `POST /v1/decay` | `gn decay` | One underlying's exposures as time passes, with spot and vol unchanged |
 
 A breach is a line in a response, and nothing acts on it: see `docs/limitations.md`.
-Each of these except liquidity, and `/v1/stress`, `/v1/grid`, and `gn stress`, carries the book's valuation `issues`, so read them as you would on a proposal: an expired option shows no risk here, and is still there to settle.
+Each of these except liquidity, and `/v1/stress`, `/v1/grid`, `/v1/frontier`, `gn stress`, and `gn frontier`, carries the book's valuation `issues`, so read them as you would on a proposal: an expired option shows no risk here, and is still there to settle.
 `gn decay` and `/v1/decay` also list an issue first appearing at a step, marked with that step, such as `(at +10d)`.
 
 A limit needs a `lower`, an `upper`, or both, and a bound must be finite.
@@ -68,6 +68,7 @@ A limit needs a `lower`, an `upper`, or both, and a bound must be finite.
 A zero-width band, or one with a side left out, has no such ratio, so `utilization` is null and `utilization_unbounded` is true.
 
 A scenario, or a decay step, can look forward at most 36,525 days.
+Every date in a request must fall from 1900 to 2300.
 
 ## Listing proposals
 

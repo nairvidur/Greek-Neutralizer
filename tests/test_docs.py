@@ -18,5 +18,7 @@ def test_readme_library_example_runs(capsys):
 
 def test_paths_named_in_the_readme_exist():
     readme = (ROOT / "README.md").read_text()
-    for name in re.findall(r"`(docs/[\w./-]+)`", readme):
+    names = re.findall(r"`(docs/[\w./-]+)`", readme)
+    assert names, "the README should name paths under docs/, or this pattern has stopped matching"
+    for name in names:
         assert (ROOT / name).exists(), name

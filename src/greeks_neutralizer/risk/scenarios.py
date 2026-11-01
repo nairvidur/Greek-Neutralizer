@@ -140,12 +140,7 @@ class ShockedSurface:
 
 
 def _horizon(as_of: datetime, scenario: Scenario) -> datetime:
-    try:
-        return as_of + timedelta(days=scenario.days_forward)
-    except OverflowError as exc:
-        raise ValidationError(
-            f"scenario {scenario.name}: {scenario.days_forward:g} days past {as_of} is not a date"
-        ) from exc
+    return as_of + timedelta(days=scenario.days_forward)
 
 
 def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) -> UnderlyingMarket:

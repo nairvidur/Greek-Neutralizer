@@ -56,7 +56,8 @@ This is what the evidence process surfaced in the optimizer, in the order it was
 
 ## Independent review
 
-Two fresh-context reviews found 47 defects, all with reproductions.
+The first two fresh-context reviews found 47 defects, all with reproductions.
+Later automated rounds found more, which that figure does not count: see `docs/evidence/README.md`.
 `review_red.txt` lists the numerical tests failing before their fixes, and these are pinned in `tests/test_review_findings.py` and `tests/test_fail_closed.py`.
 The review also corrected claims in this repository: a gamma weight 3x too small, and an inflated Taylor error.
 

@@ -10,6 +10,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from numpy.testing import assert_allclose
+from scipy.optimize import linprog as real_linprog
 from scipy.optimize import milp as real_milp
 
 from greeks_neutralizer.domain import (
@@ -240,11 +241,12 @@ def test_exact_evaluator_reproduces_the_solver_objective(config):
         constraints=constraints,
         bounds=Bounds(lb, ub),
         integrality=program._integrality(),
-        options={"mip_rel_gap": 1e-3, "time_limit": 2.0},
+        options={"mip_rel_gap": 1e-3, "node_limit": 2000},
     )
+    assert result.x is not None
     x = np.asarray(result.x)
     lots = np.round(program._net_lots(x)).astype(np.int64)
-    # An incumbent at the time limit can hold offsetting lots, which pay cost and net to nothing.
+    # An incumbent at a search limit can hold offsetting lots, which pay cost and net to nothing.
     # Reading back the net position is right, so the evaluator comes out lower by exactly that.
     costs = program._costs()
     wash = 0.0
@@ -265,13 +267,40 @@ def _hard_option_problem(time_limit):
     )
 
 
-def test_answer_does_not_depend_on_how_much_time_the_machine_had():
+def test_answer_does_not_depend_on_how_much_time_the_machine_had(monkeypatch):
     # Found comparing evidence runs: the wall-clock limit made results vary with machine load, so
-    # a proposal could not be replayed. A long and a short backstop must give the same trade.
+    # a proposal could not be replayed. A long and a short backstop must give the same trade. The
+    # solver runs with no clock at all here, so a slow machine cannot change the outcome, and what
+    # is tested is that the backstop reaches the solver only as a backstop, beside a node limit.
+    seen = []
+
+    def without_the_clock(real):
+        def solver(*args, **kwargs):
+            options = dict(kwargs["options"])
+            seen.append(options.pop("time_limit"))
+            return real(*args, **{**kwargs, "options": options})
+
+        return solver
+
+    node_limits = []
+
+    def recording_milp(*args, **kwargs):
+        node_limits.append(kwargs["options"]["node_limit"])
+        return without_the_clock(real_milp)(*args, **kwargs)
+
+    monkeypatch.setattr(optimizer, "milp", recording_milp)
+    monkeypatch.setattr(optimizer, "linprog", without_the_clock(real_linprog))
     snapshot = flat_snapshot()
     roomy = solve_hedge(_hard_option_problem(30.0), snapshot)
+    assert set(seen) == {30.0}
+    seen.clear()
     tight = solve_hedge(_hard_option_problem(5.0), snapshot)
+    assert set(seen) == {5.0}
+    assert node_limits
+    assert set(node_limits) == {HedgeConfig().mip_node_limit}
     assert not any("SOLVER_TIME_LIMIT" in issue for issue in roomy.issues)
+    assert not any("SOLVER_TIME_LIMIT" in issue for issue in tight.issues)
+    assert roomy.legs
     assert roomy.quantities == tight.quantities
     assert roomy.objective == tight.objective
 
@@ -322,7 +351,8 @@ def test_frontier_is_monotone_on_a_large_universe():
             sum(t.effective_weight * abs(getattr(p.after["XYZ"], t.greek.value)) for t in DGV)
         )
     # Integer lots leave a tolerance: one contract's residual, at most about $150 here.
-    assert residuals[2] <= residuals[0] + 150.0
+    assert residuals[1] <= residuals[0] + 150.0
+    assert residuals[2] <= residuals[1] + 150.0
 
 
 def test_screen_on_a_large_universe_keeps_the_leg_that_offsets_the_book(monkeypatch):
@@ -369,7 +399,13 @@ def test_max_buy_and_sell_caps_are_respected():
         replace(CANDIDATES[0], max_buy=50, max_sell=50),
         *(replace(c, max_buy=3, max_sell=3) for c in CANDIDATES[1:]),
     )
+    # Without caps some leg goes past them, so the caps below have work to do.
+    assert any(
+        abs(leg.quantity) > (50 if isinstance(leg.instrument, LinearInstrument) else 3)
+        for leg in solve().legs
+    )
     p = solve(candidates=capped)
+    assert any(isinstance(leg.instrument, OptionContract) for leg in p.legs)
     for leg in p.legs:
         limit = 50 if isinstance(leg.instrument, LinearInstrument) else 3
         assert abs(leg.quantity) <= limit
