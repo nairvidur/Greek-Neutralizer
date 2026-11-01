@@ -7,12 +7,21 @@ long. There is deliberately no separate "side" field, so sign cannot disagree wi
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import TypeAlias
+from numbers import Integral
+from typing import Any, TypeAlias
+from zoneinfo import ZoneInfo
 
 from greeks_neutralizer.errors import ValidationError
+
+NEW_YORK = ZoneInfo("America/New_York")
+SUPPORTED_CURRENCY = "USD"
+# Symbols reach FIX tickets and spreadsheets. No delimiter can appear, and no cell can start a
+# formula: index symbols may lead with ^ or _, but = + - @ cannot lead anything.
+_SYMBOL = re.compile(r"[A-Za-z0-9^_][A-Za-z0-9.^_-]{0,31}")
 
 
 class OptionRight(StrEnum):
@@ -57,6 +66,31 @@ def require_finite(name: str, value: float) -> None:
         raise ValidationError(f"{name} must be finite, got {value!r}")
 
 
+def require_int(name: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValidationError(f"{name} must be an integer, got {value!r}")
+
+
+def require_symbol(name: str, value: str) -> None:
+    if not isinstance(value, str) or not _SYMBOL.fullmatch(value):
+        raise ValidationError(
+            f"{name} must be 1 to 32 letters, digits, or . ^ _ -, not starting with . or -, "
+            f"got {value!r}"
+        )
+
+
+def _require_supported_currency(value: str) -> None:
+    if value != SUPPORTED_CURRENCY:
+        raise ValidationError(
+            f"currency must be {SUPPORTED_CURRENCY}, got {value!r}: every total is in dollars, "
+            "and there is no FX conversion"
+        )
+
+
+def _new_york_date(value: datetime) -> str:
+    return value.astimezone(NEW_YORK).date().isoformat()
+
+
 def require_aware(name: str, value: datetime) -> None:
     if not isinstance(value, datetime):
         raise ValidationError(f"{name} must be a datetime, got {type(value).__name__}")
@@ -84,8 +118,10 @@ class OptionContract:
     exchange_symbol: str = ""
 
     def __post_init__(self) -> None:
-        if not self.underlying:
-            raise ValidationError("underlying must be non-empty")
+        require_symbol("underlying", self.underlying)
+        if self.exchange_symbol:
+            require_symbol("exchange_symbol", self.exchange_symbol)
+        _require_supported_currency(self.currency)
         if not isinstance(self.right, OptionRight):
             raise ValidationError(f"right must be an OptionRight, got {self.right!r}")
         if not isinstance(self.style, ExerciseStyle):
@@ -100,12 +136,14 @@ class OptionContract:
     def key(self) -> str:
         return (
             f"{self.underlying}|{self.expiry.isoformat()}|{self.right.value}|"
-            f"{self.strike:.6f}|{self.style.value}|{self.multiplier:g}"
+            f"{self.strike:.6f}|{self.style.value}|{self.multiplier:g}|"
+            f"{self.settlement.value}|{self.exchange_symbol}"
         )
 
     def describe(self) -> str:
+        root = f" ({self.exchange_symbol})" if self.exchange_symbol else ""
         return (
-            f"{self.underlying} {self.expiry.date().isoformat()} "
+            f"{self.underlying}{root} {_new_york_date(self.expiry)} "
             f"{self.strike:g}{self.right.value[0].upper()}"
         )
 
@@ -130,8 +168,9 @@ class LinearInstrument:
     currency: str = "USD"
 
     def __post_init__(self) -> None:
-        if not self.symbol or not self.underlying:
-            raise ValidationError("symbol and underlying must be non-empty")
+        require_symbol("symbol", self.symbol)
+        require_symbol("underlying", self.underlying)
+        _require_supported_currency(self.currency)
         if not isinstance(self.kind, LinearKind):
             raise ValidationError(f"kind must be a LinearKind, got {self.kind!r}")
         require_finite_positive("multiplier", self.multiplier)
@@ -143,16 +182,22 @@ class LinearInstrument:
             if self.expiry is None:
                 raise ValidationError("a future requires an expiry")
             require_aware("expiry", self.expiry)
+        elif self.expiry is not None:
+            raise ValidationError(f"only a future has an expiry, not a {self.kind.value}")
         if self.kind is LinearKind.PROXY and self.basis_vol == 0.0:
             raise ValidationError("a proxy hedge must state a positive basis_vol")
 
     @property
     def key(self) -> str:
         expiry = self.expiry.isoformat() if self.expiry is not None else ""
-        return f"{self.symbol}|{self.kind.value}|{self.multiplier:g}|{expiry}"
+        return (
+            f"{self.symbol}|{self.underlying}|{self.kind.value}|{self.multiplier:g}|"
+            f"{self.delta_ratio:.12g}|{self.basis_vol:.12g}|{expiry}"
+        )
 
     def describe(self) -> str:
-        return f"{self.symbol} ({self.kind.value})"
+        maturity = f" {_new_york_date(self.expiry)}" if self.expiry is not None else ""
+        return f"{self.symbol}{maturity} ({self.kind.value})"
 
 
 Instrument: TypeAlias = OptionContract | LinearInstrument
@@ -189,6 +234,8 @@ class Quote:
         require_finite("ask", self.ask)
         if self.bid < 0.0 or self.ask < 0.0:
             raise ValidationError(f"quote prices must be non-negative, got {self.bid}/{self.ask}")
+        require_int("bid_size", self.bid_size)
+        require_int("ask_size", self.ask_size)
         if self.bid_size < 0 or self.ask_size < 0:
             raise ValidationError("quote sizes must be non-negative")
         require_aware("timestamp", self.timestamp)

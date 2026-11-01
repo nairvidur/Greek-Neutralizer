@@ -100,9 +100,6 @@ class GreekArrays:
     zomma: FloatArray
     color: FloatArray
 
-    def take(self, index: NDArray[np.intp] | NDArray[np.bool_]) -> GreekArrays:
-        return GreekArrays(*(getattr(self, f.name)[index] for f in fields(self)))
-
 
 GREEK_NAMES: tuple[str, ...] = tuple(f.name for f in fields(GreekArrays))
 

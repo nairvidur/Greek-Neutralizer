@@ -14,7 +14,6 @@ solver believed. A proposal that fails verification is an exception, not a warni
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -690,7 +689,7 @@ class _Program:
         costs = self._costs()
         constraints, _ = self._constraints()
         relaxed = self._relax(costs, constraints)
-        if relaxed.status == 2 or (relaxed.x is None and relaxed.status == 2):
+        if relaxed.status == 2:
             raise HedgeInfeasibleError(
                 "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
             )
@@ -848,34 +847,8 @@ class _Program:
 
 
 def _problem_fingerprint(problem: HedgeProblem) -> str:
-    payload = {
-        "book": [(p.instrument.key, p.quantity) for p in problem.book],
-        "candidates": [
-            (
-                c.instrument.key,
-                c.quote.bid,
-                c.quote.ask,
-                c.quote.bid_size,
-                c.quote.ask_size,
-                c.quote.timestamp.isoformat(),
-                c.fee_per_unit,
-                c.max_buy,
-                c.max_sell,
-                c.impact_per_unit,
-                c.lot_size,
-            )
-            for c in problem.candidates
-        ],
-        "targets": [
-            (t.underlying, t.greek.value, t.lower, t.upper, t.weight) for t in problem.targets
-        ],
-        "scenarios": [
-            (s.name, s.spot_shock, s.vol_shock, s.skew_shock, s.term_power, s.days_forward)
-            for s in problem.scenarios
-        ],
-        "config": repr(problem.config),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    """Over the dataclass repr, so that every field of every input is covered by construction."""
+    return hashlib.sha256(repr(problem).encode()).hexdigest()
 
 
 def verify_proposal(
@@ -968,6 +941,16 @@ def _check_targets(problem: HedgeProblem, snapshot: MarketSnapshot) -> None:
             )
 
 
+def _uncovered_underlyings(problem: HedgeProblem, usable: list[_Usable]) -> list[str]:
+    """Targeted underlyings with nothing that can trade, so the hedge cannot act on them at all."""
+    tradable = {
+        row.candidate.instrument.underlying
+        for row in usable
+        if row.buy_total_cap > 0 or row.sell_total_cap > 0
+    }
+    return sorted({t.underlying for t in problem.targets} - tradable)
+
+
 def _coverage_issues(
     problem: HedgeProblem,
     snapshot: MarketSnapshot,
@@ -980,7 +963,14 @@ def _coverage_issues(
             f"NO_USABLE_CANDIDATES all {len(problem.candidates)} candidates were excluded, so this "
             "says nothing about whether a hedge is needed"
         )
-    elif excluded:
+    else:
+        for underlying in _uncovered_underlyings(problem, usable):
+            offered = sum(c.instrument.underlying == underlying for c in problem.candidates)
+            issues.append(
+                f"NO_USABLE_CANDIDATES {underlying}: none of its {offered} candidates can trade, "
+                "so its residual is unhedged, which says nothing about whether a hedge is needed"
+            )
+    if usable and excluded:
         share = len(excluded) / max(len(problem.candidates), 1)
         if share >= _EXCLUDED_ISSUE_SHARE:
             issues.append(
@@ -1104,6 +1094,8 @@ def solve_hedge(
             f"INTEGRALITY_GAP objective {solution.objective:,.2f} against a continuous lower bound "
             f"of {solution.lower_bound:,.2f}: integer lots cost at most {solution.gap:.1%}"
         )
+    if usable and _uncovered_underlyings(problem, usable):
+        status = ProposalStatus.PARTIAL_COVERAGE
     if stability is not None and not stability.is_stable:
         status = ProposalStatus.UNSTABLE
         issues.extend(f"UNSTABLE {note}" for note in stability.notes)

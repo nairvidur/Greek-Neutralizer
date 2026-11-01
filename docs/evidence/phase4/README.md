@@ -38,10 +38,10 @@ Against daily delta hedging, with 95% block-bootstrap intervals:
 
 | Policy | Variance reduction | ES improvement | Mean P&L per day |
 |---|---|---|---|
-| Optimizer, delta, gamma, vega | 92.3% (89.1 to 94.7) | +$27,070 (20,311 to 34,454) | **-$700 (-986 to -387)** |
+| Optimizer, delta, gamma, vega | 92.3% (89.1 to 94.7) | +$27,070 (20,311 to 34,454) | **-$700 (-986 to -386)** |
 | Same, lower risk aversion | 89.3% (81.4 to 94.5) | +$27,529 (20,376 to 35,390) | **-$603 (-907 to -258)** |
 | Same, with CVaR | 86.4% (69.2 to 95.9) | +$30,403 (21,866 to 40,465) | -$427 (-812 to +24) |
-| Delta, no-trade band | -30.2% (-42.6 to -19.4) | -$4,252 (-6,688 to -1,763) | +$102 (-38 to +234) |
+| Delta, no-trade band | -30.2% (-42.6 to -19.4) | -$4,252 (-6,688 to -1,763) | +$102 (-38 to +233) |
 
 ## How to read this
 

@@ -73,9 +73,6 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PIE", "RET", "PTH", "NPY"]
 ignore = ["RET505"]
 
-[tool.ruff.lint.per-file-ignores]
-"tests/test_legacy_red.py" = ["B", "RUF"]
-
 [tool.mypy]
 python_version = "3.11"
 strict = true

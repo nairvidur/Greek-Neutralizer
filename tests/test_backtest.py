@@ -23,12 +23,11 @@ from greeks_neutralizer.backtest.proxy import (
     third_friday,
 )
 from greeks_neutralizer.backtest.report import compare, max_drawdown, policy_stats, stress_days
-from greeks_neutralizer.domain import OptionRight, Position, Quote
+from greeks_neutralizer.domain import NEW_YORK, OptionRight, Position, Quote
 from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.hedging.problem import GreekName, GreekTarget, HedgeCandidate, HedgeConfig
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.black import black_greeks
-from greeks_neutralizer.time_model import NEW_YORK
 
 START = date(2024, 1, 2)
 

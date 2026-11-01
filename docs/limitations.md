@@ -23,6 +23,7 @@ This is alpha software, and **it has not been used to hedge real money.**
 
 Phase 7 is **not started**.
 US listed equity, ETF, and index options work today, with delta-one and futures as hedges.
+Every instrument must be in USD, and any other currency is rejected at construction, because totals are in dollars and there is no FX conversion.
 
 | Not implemented | Note |
 |---|---|

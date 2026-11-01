@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from greeks_neutralizer._version import __version__
@@ -58,7 +58,6 @@ from greeks_neutralizer.workflow import (
     ProposalStore,
     WorkflowError,
     WorkflowPolicy,
-    verify_audit_log,
 )
 
 logger = logging.getLogger("greeks_neutralizer.service")
@@ -212,7 +211,7 @@ def create_app(
     def healthz() -> JSONResponse:
         """Liveness, and whether the audit chain is intact. A broken chain returns 503, so that a
         monitor watching status codes sees it: it is an incident, and approvals are blocked."""
-        check = verify_audit_log(audit_file)
+        check = store.audit.verify()
         return JSONResponse(
             {
                 "status": "ok" if check.ok else "audit_chain_broken",
@@ -263,7 +262,7 @@ def create_app(
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         name = payload.get("set", "all")
-        if name not in SCENARIO_SETS:
+        if not isinstance(name, str) or name not in SCENARIO_SETS:
             raise ValidationError(f"unknown scenario set {name!r}; valid: {sorted(SCENARIO_SETS)}")
         scenarios = SCENARIO_SETS[name]
         pnl = book_scenario_pnl(book, snapshot, scenarios)
@@ -279,7 +278,7 @@ def create_app(
     @app.post("/v1/grid")
     def grid(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
         """A spot and vol grid by full repricing: rows are spot shocks and columns vol shocks."""
-        check_fields(payload, "request", {"book", "market"}, {"set"})
+        check_fields(payload, "request", {"book", "market"})
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         spots = (-0.2, -0.1, -0.05, -0.02, 0.0, 0.02, 0.05, 0.1)
@@ -354,18 +353,19 @@ def create_app(
         return store.export_tickets(record_id, user, fmt)
 
     @app.get("/v1/audit")
-    def audit(limit: int = 50, user: str = Depends(actor)) -> dict[str, Any]:
-        check = verify_audit_log(audit_file)
-        records: list[dict[str, Any]] = []
-        if audit_file.exists():
-            with audit_file.open() as handle:
-                records = [json.loads(line) for line in handle if line.strip()]
-        return {
-            "chain_ok": check.ok,
-            "total": check.records,
-            "first_bad_line": check.first_bad_line,
-            "records": records[-limit:][::-1],
-        }
+    def audit(limit: int = Query(50, ge=1), user: str = Depends(actor)) -> dict[str, Any]:
+        check = store.audit.verify()
+        records, unreadable = store.audit.read()
+        return _safe(
+            {
+                "chain_ok": check.ok,
+                "total": check.records,
+                "first_bad_line": check.first_bad_line,
+                "reason": check.reason,
+                "unreadable_lines": unreadable,
+                "records": records[-limit:][::-1],
+            }
+        )
 
     return app
 

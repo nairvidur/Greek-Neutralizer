@@ -34,6 +34,8 @@ class DiscountCurve:
     def __post_init__(self) -> None:
         if not self.times or len(self.times) != len(self.zero_rates):
             raise ValidationError("curve needs equal, non-empty times and zero_rates")
+        for time_ in self.times:
+            require_finite("curve time", time_)
         if any(b <= a for a, b in pairwise(self.times)):
             raise ValidationError("curve times must be strictly increasing")
         if self.times[0] <= 0.0:

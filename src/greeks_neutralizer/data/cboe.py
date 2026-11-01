@@ -14,9 +14,15 @@ from typing import Any, cast
 
 from greeks_neutralizer.data.chain import ChainQuote
 from greeks_neutralizer.data.symbology import is_am_settled, is_cash_settled_european, parse_osi
-from greeks_neutralizer.domain import ExerciseStyle, OptionContract, Quote, SettlementKind
+from greeks_neutralizer.domain import (
+    NEW_YORK,
+    ExerciseStyle,
+    OptionContract,
+    Quote,
+    SettlementKind,
+)
 from greeks_neutralizer.errors import MarketDataError
-from greeks_neutralizer.time_model import NEW_YORK, us_expiry
+from greeks_neutralizer.time_model import us_expiry
 
 _MAX_REJECTED_SHARE = 0.05
 

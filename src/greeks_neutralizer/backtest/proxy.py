@@ -22,6 +22,7 @@ import numpy as np
 
 from greeks_neutralizer.backtest.engine import DayMarket
 from greeks_neutralizer.domain import (
+    NEW_YORK,
     ExerciseStyle,
     Instrument,
     LinearInstrument,
@@ -34,7 +35,7 @@ from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.hedging.problem import HedgeCandidate
 from greeks_neutralizer.market import DiscountCurve, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.black import FloatArray, black_premium
-from greeks_neutralizer.time_model import NEW_YORK, calendar_years, us_expiry
+from greeks_neutralizer.time_model import calendar_years, us_expiry
 
 SYMBOL = "SPX"
 _TERM_DAYS = 60.0 / 365.0

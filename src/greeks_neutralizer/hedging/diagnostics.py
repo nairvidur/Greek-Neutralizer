@@ -26,7 +26,6 @@ from greeks_neutralizer.hedging.problem import (
     StabilityReport,
 )
 from greeks_neutralizer.market import MarketSnapshot
-from greeks_neutralizer.pricing.black import FloatArray
 from greeks_neutralizer.pricing.book import Exposure, value_book
 from greeks_neutralizer.risk.scenarios import (
     Scenario,
@@ -150,7 +149,7 @@ def stability_report(
     elif worst_change > threshold and worst_regret > regret_limit:
         notes.append(
             f"a small input change moves the option trade by {worst_change:.0%} of its contracts, "
-            f"and holding this hedge would give up {_percent(worst_regret)} of its benefit against "
+            f"and holding this hedge would give up {worst_regret:.0%} of its benefit against "
             f"the hedge that market calls for, over the {regret_limit:.0%} limit"
         )
     return StabilityReport(
@@ -161,10 +160,6 @@ def stability_report(
         is_stable=not notes,
         notes=tuple(notes),
     )
-
-
-def _percent(value: float) -> str:
-    return "an unbounded amount" if not np.isfinite(value) else f"{value:.0%}"
 
 
 def _regret(
@@ -399,13 +394,3 @@ def hedge_decay_forecast(
         book = value_book(positions, rolled)
         steps.append(DecayStep(day, book.by_underlying.get(underlying, Exposure())))
     return tuple(steps)
-
-
-def effective_number_of_bets(values: FloatArray) -> float:
-    """Herfindahl-based concentration of absolute exposures. 1 means all in one position."""
-    weights = np.abs(np.asarray(values, dtype=np.float64))
-    total = float(weights.sum())
-    if total == 0.0:
-        return 0.0
-    shares = weights / total
-    return float(1.0 / np.sum(shares * shares))

@@ -19,6 +19,7 @@ from greeks_neutralizer.domain import (
     Instrument,
     OptionContract,
     Position,
+    require_finite,
 )
 from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.market import MarketSnapshot, UnderlyingMarket, VolSurface
@@ -28,7 +29,12 @@ from greeks_neutralizer.pricing.american import (
     exercise_is_ever_optimal,
 )
 from greeks_neutralizer.pricing.black import FloatArray, black_premium
-from greeks_neutralizer.pricing.book import _american_batch, linear_unit_exposure, value_book
+from greeks_neutralizer.pricing.book import (
+    _american_batch,
+    is_expired_instrument,
+    linear_unit_exposure,
+    value_book,
+)
 from greeks_neutralizer.time_model import calendar_years
 
 _REF_TAU = 30.0 / 365.0
@@ -50,9 +56,14 @@ class Scenario:
     note: str = ""
 
     def __post_init__(self) -> None:
-        for value in (self.spot_shock, self.vol_shock, self.skew_shock, self.days_forward):
-            if not np.isfinite(value):
-                raise ValidationError(f"scenario {self.name}: shocks must be finite")
+        if not isinstance(self.name, str) or not self.name:
+            raise ValidationError(f"scenario name must be non-empty text, got {self.name!r}")
+        if not isinstance(self.note, str):
+            raise ValidationError(f"scenario {self.name}: note must be text")
+        if not isinstance(self.sticky_strike, bool):
+            raise ValidationError(f"scenario {self.name}: sticky_strike must be true or false")
+        for label in ("spot_shock", "vol_shock", "skew_shock", "term_power", "days_forward"):
+            require_finite(f"scenario {self.name}: {label}", getattr(self, label))
         if self.spot_shock <= -1.0:
             raise ValidationError(f"scenario {self.name}: spot_shock must exceed -100%")
         if self.days_forward < 0.0:
@@ -232,12 +243,18 @@ def scenario_pnl_matrix(
     *,
     tree_steps: int = 51,
 ) -> NDArray[np.float64]:
-    """P&L of holding one unit, shape (n_scenarios, n_instruments), by full repricing."""
+    """P&L of holding one unit, shape (n_scenarios, n_instruments), by full repricing.
+
+    An instrument already expired at the base date has settled, so no market move can reach it.
+    One that expires inside a scenario's horizon is live today and settles at the shocked spot.
+    """
     base = price_instruments(instruments, snapshot, tree_steps=tree_steps)
     out = np.zeros((len(scenarios), len(instruments)), dtype=np.float64)
+    settled = np.array([is_expired_instrument(i, snapshot.as_of) for i in instruments], dtype=bool)
     for row, scenario in enumerate(scenarios):
         shocked = shock_snapshot(snapshot, scenario)
         out[row] = price_instruments(instruments, shocked, tree_steps=tree_steps) - base
+    out[:, settled] = 0.0
     return out
 
 

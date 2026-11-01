@@ -10,6 +10,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import Any, TypeVar
 
 from greeks_neutralizer.domain import (
@@ -22,8 +23,9 @@ from greeks_neutralizer.domain import (
     Position,
     Quote,
     SettlementKind,
+    require_finite,
 )
-from greeks_neutralizer.errors import ValidationError
+from greeks_neutralizer.errors import GNError, ValidationError
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -47,6 +49,21 @@ T = TypeVar("T")
 JsonDict = Mapping[str, Any]
 
 SCHEMA_VERSION = 1
+
+
+def _typed_errors(parse: Callable[[Any], T]) -> Callable[[Any], T]:
+    """An entry point's input errors are ValidationError, whatever a builtin raised on bad types."""
+
+    @wraps(parse)
+    def checked(data: Any) -> T:
+        try:
+            return parse(data)
+        except GNError:
+            raise
+        except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as exc:
+            raise ValidationError(f"{parse.__name__}: {exc}") from exc
+
+    return checked
 
 
 def _require(data: Any, name: str) -> JsonDict:
@@ -140,6 +157,7 @@ def parse_position(data: Any) -> Position:
     return Position(parse_instrument(d["instrument"]), d["quantity"])
 
 
+@_typed_errors
 def parse_book(data: Any) -> tuple[Position, ...]:
     return _list_of(data, "book", parse_position)
 
@@ -158,7 +176,14 @@ def _parse_surface(data: Any) -> FlatVol | SviSurface:
             check_fields(s, "slice", {"tau", "a", "b", "rho", "m", "sigma"})
             return SviSlice(s["tau"], s["a"], s["b"], s["rho"], s["m"], s["sigma"])
 
-        ranges = tuple((float(r[0]), float(r[1])) for r in d.get("quoted_ranges", ()))
+        def parse_range(item: Any) -> tuple[float, float]:
+            if not isinstance(item, Sequence) or isinstance(item, str) or len(item) != 2:
+                raise ValidationError(f"a quoted range is [low, high], got {item!r}")
+            require_finite("quoted range", item[0])
+            require_finite("quoted range", item[1])
+            return float(item[0]), float(item[1])
+
+        ranges = _list_of(d.get("quoted_ranges", ()), "quoted_ranges", parse_range)
         return SviSurface(_list_of(d["slices"], "slices", parse_slice), ranges)
     raise ValidationError(f"surface type must be 'flat' or 'svi', got {kind!r}")
 
@@ -174,7 +199,10 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
     if "curve" in d:
         curve_data = _require(d["curve"], "curve")
         check_fields(curve_data, "curve", {"times", "zero_rates"})
-        curve = DiscountCurve(tuple(curve_data["times"]), tuple(curve_data["zero_rates"]))
+        curve = DiscountCurve(
+            _list_of(curve_data["times"], "times", float),
+            _list_of(curve_data["zero_rates"], "zero_rates", float),
+        )
     elif "rate" in d:
         curve = DiscountCurve.flat(d["rate"])
     else:
@@ -195,6 +223,7 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
     )
 
 
+@_typed_errors
 def parse_market(data: Any) -> MarketSnapshot:
     d = _require(data, "market")
     check_fields(d, "market", {"as_of", "underlyings"})
@@ -298,10 +327,13 @@ def _parse_config(data: Any) -> HedgeConfig:
     }
     check_fields(d, "config", set(), allowed)
     if "max_quote_age_seconds" in d:
-        d["max_quote_age"] = timedelta(seconds=d.pop("max_quote_age_seconds"))
+        seconds = d.pop("max_quote_age_seconds")
+        require_finite("max_quote_age_seconds", seconds)
+        d["max_quote_age"] = timedelta(seconds=seconds)
     return HedgeConfig(**d)
 
 
+@_typed_errors
 def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
     d = _require(data, "request")
     check_fields(
@@ -313,6 +345,9 @@ def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
     version = d.get("schema_version", SCHEMA_VERSION)
     if version != SCHEMA_VERSION:
         raise ValidationError(f"schema_version {version} is not supported; use {SCHEMA_VERSION}")
+    run_stability = d.get("run_stability", False)
+    if not isinstance(run_stability, bool):
+        raise ValidationError(f"run_stability must be true or false, got {run_stability!r}")
     problem = HedgeProblem(
         book=parse_book(d["book"]),
         candidates=_list_of(d["candidates"], "candidates", parse_candidate),
@@ -320,7 +355,7 @@ def parse_hedge_request(data: Any) -> tuple[HedgeProblem, MarketSnapshot, bool]:
         scenarios=_parse_scenarios(d.get("scenarios", ())),
         config=_parse_config(d.get("config", {})),
     )
-    return problem, parse_market(d["market"]), bool(d.get("run_stability", False))
+    return problem, parse_market(d["market"]), run_stability
 
 
 def instrument_to_json(instrument: Instrument) -> dict[str, Any]:

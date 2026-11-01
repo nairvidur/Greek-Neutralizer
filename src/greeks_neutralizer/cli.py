@@ -147,6 +147,8 @@ def _cmd_stress(args: argparse.Namespace) -> dict[str, Any]:
 def _no_legs_text(status: str) -> str:
     if status == "no_usable_candidates":
         return "0 legs: every candidate was excluded, so this does not mean no hedge is needed"
+    if status == "partial_coverage":
+        return "0 legs: a targeted underlying has no usable candidate, so see the issues"
     return "0 legs: no trade improves the objective"
 
 

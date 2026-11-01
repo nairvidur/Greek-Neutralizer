@@ -15,10 +15,6 @@ class MarketDataError(GNError):
     """Market data is missing or unusable. The engine fails closed rather than guessing."""
 
 
-class ConvergenceError(GNError):
-    """A numerical routine could not reach its stated tolerance."""
-
-
 class HedgeInfeasibleError(GNError):
     """No hedge satisfies the hard constraints. Carries the diagnosed binding constraints."""
 

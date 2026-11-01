@@ -41,7 +41,6 @@ class QualityPolicy:
     max_age: timedelta = timedelta(seconds=30)
     max_relative_spread: float = 0.5
     min_absolute_spread_exempt: float = 0.10
-    zero_bid_blocks_selling: bool = True
     # False only for a source known not to populate sizes, so absence is not read as "no market".
     require_size: bool = True
 

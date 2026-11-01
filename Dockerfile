@@ -11,6 +11,8 @@ FROM python:3.12-slim
 RUN useradd --create-home --uid 10001 gn
 COPY --from=build /dist /dist
 RUN pip install --no-cache-dir "$(ls /dist/*.whl)[service]" && rm -rf /dist
+# A named volume takes its ownership from this directory, so the audit log stays writable.
+RUN mkdir -p /home/gn/data && chown gn /home/gn/data
 USER gn
 WORKDIR /home/gn
 ENV GN_AUDIT_LOG=/home/gn/data/audit.jsonl

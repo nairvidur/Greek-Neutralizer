@@ -14,7 +14,7 @@ uv run python scripts/hedge_real_chain.py vendor_data/_SPX.json --rate 0.0482
 
 | Check | Result |
 |---|---|
-| Book value of the hedged book against QuantLib | Difference about $1e-9 on $0.5M |
+| Book value of the hedged book against QuantLib | Difference about $1e-9 on $336,745 |
 | Delta, gamma, and vega against QuantLib | Differences of 1e-11 or smaller |
 | Internal repricing verification | Passed |
 | Objective against the LP lower bound | 2,419 against 2,337, at most 3.4% from integer lots and leg limits |

@@ -26,7 +26,6 @@ from greeks_neutralizer.domain import (
     SettlementKind,
 )
 from greeks_neutralizer.errors import (
-    GNError,
     HedgeInfeasibleError,
     MarketDataError,
     ValidationError,
@@ -45,7 +44,7 @@ from greeks_neutralizer.hedging.problem import (
 )
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.black import black_greeks
-from greeks_neutralizer.pricing.book import value_book
+from greeks_neutralizer.pricing.book import value_options
 from greeks_neutralizer.schema import parse_hedge_request, proposal_to_json
 from greeks_neutralizer.service.app import create_app
 from greeks_neutralizer.surface import SviSlice, SviSurface
@@ -524,7 +523,9 @@ def test_extrapolation_flag_covers_tenor():
 def test_allowed_extrapolation_is_still_reported():
     surface = SviSurface((SviSlice(0.25, 0.005, 0.06, -0.6, 0.02, 0.15),), ((-0.2, 0.2),))
     snap = flat_snapshot().replaced("XYZ", surface=surface)
-    far = HedgeCandidate(euro("put", 50, 91), Quote(0.01, 0.03, 500, 500, AS_OF))
+    contract = euro("put", 70, 91)
+    mid = float(value_options([contract], snap).greeks.price[0])
+    far = HedgeCandidate(contract, Quote(mid - 0.01, mid + 0.01, 500, 500, AS_OF))
     book = (Position(euro("put", 95, 91), -10),)
     p = solve_hedge(
         HedgeProblem(
@@ -536,8 +537,8 @@ def test_allowed_extrapolation_is_still_reported():
         ),
         snap,
     )
-    if p.legs:
-        assert any("EXTRAPOLATED_VOL" in issue for issue in p.issues)
+    assert [leg.instrument for leg in p.legs] == [contract]
+    assert any("EXTRAPOLATED_VOL" in issue and contract.describe() in issue for issue in p.issues)
 
 
 def test_surface_without_quoted_ranges_is_flagged():
@@ -677,8 +678,3 @@ def test_uncaught_errors_are_counted(tmp_path, monkeypatch):
     )
     assert response.status_code == 500
     assert "gn_server_errors_total 1" in client.get("/metrics").text
-
-
-def test_gn_error_type_stays_available():
-    assert issubclass(HedgeInfeasibleError, GNError)
-    assert value_book([], flat_snapshot()).lines == ()

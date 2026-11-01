@@ -64,7 +64,7 @@ td.wrap { white-space: normal; text-align: left; min-width: 260px; }
 .notice.bad { background: var(--bad-bg); color: var(--bad-ink); }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .kpi { padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
-.kpi span { display: block; color: var(--muted); font-size: 12px; }
+.kpi > span { display: block; color: var(--muted); font-size: 12px; }
 .kpi strong { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .empty { color: var(--muted); padding: 8px 0; }
 .heat td { text-align: center; }
@@ -146,10 +146,23 @@ function fmt(n, digits = 0) {
   const text = Number(n).toLocaleString(undefined,
     {minimumFractionDigits: digits, maximumFractionDigits: digits});
   // A value that rounds to zero should not display a sign.
-  return /^-0(\.0*)?$/.test(text) ? text.slice(1) : text;
+  return /^-0([.,]0*)?$/.test(text) ? text.slice(1) : text;
 }
-const signed = (n, digits = 0) => (n === null || n === undefined) ? "n/a" :
-  `<span class="${n < 0 ? "neg" : "pos"}">${fmt(n, digits)}</span>`;
+function signed(n, digits = 0) {
+  if (n === null || n === undefined) return "n/a";
+  // Color what is displayed: a value that rounds to zero is neither a gain nor a loss.
+  const shown = Number(Number(n).toFixed(digits));
+  return `<span class="${shown < 0 ? "neg" : shown > 0 ? "pos" : ""}">${fmt(n, digits)}</span>`;
+}
+
+const STATUS_CLASS = {optimal: "ok", within_gap: "warn", no_trade: "warn",
+  partial_coverage: "warn", no_usable_candidates: "bad", unstable: "bad"};
+const statusBadge = (status) =>
+  `<span class="badge ${STATUS_CLASS[status] || "bad"}">${escapeHtml(status)}</span>`;
+const NO_LEGS_TEXT = {
+  no_usable_candidates: "0 legs: every candidate was excluded, so this does not mean no hedge is needed.",
+  partial_coverage: "0 legs: a targeted underlying has no usable candidate, so see the issues.",
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -196,13 +209,12 @@ function table(headers, rows, leftColumns = []) {
 function renderProposal(p) {
   const verified = p.verification.passed;
   const stable = p.stability ? p.stability.is_stable : null;
-  const statusClass = p.status === "unstable" ? "bad" : p.status === "within_gap" ? "warn" : "ok";
   const worstBefore = Math.min(...Object.values(p.scenario_pnl_before));
   const worstAfter = Math.min(...Object.values(p.scenario_pnl_after));
   $("summary").className = "";
   $("summary").innerHTML = `
     <div class="row" style="margin:0 0 10px">
-      <span class="badge ${statusClass}">${escapeHtml(p.status)}</span>
+      ${statusBadge(p.status)}
       <span class="badge ${verified ? "ok" : "bad"}">${verified ? "verified by repricing" : "verification failed"}</span>
       ${stable === true ? `<span class="badge ok">stable</span>` : ""}
     </div>
@@ -224,7 +236,7 @@ function renderProposal(p) {
       `<td>${fmt(l.expected_price, 2)}</td>`, `<td>${signed(l.premium)}</td>`,
       `<td>${fmt(l.transaction_cost, 2)}</td>`, `<td class="wrap">${escapeHtml(l.rationale)}</td>`]),
     [2, 6]
-  ) : `<div class="empty">0 legs: no trade improves the objective.</div>`;
+  ) : `<div class="empty">${escapeHtml(NO_LEGS_TEXT[p.status] || "0 legs: no trade improves the objective.")}</div>`;
 
   $("residuals").innerHTML = table(
     ["Underlying and Greek", "Before", "After"],
@@ -254,10 +266,14 @@ function renderGrid(g) {
 }
 
 function renderFrontier(data) {
-  $("frontierOut").innerHTML = table(["Choice", "Cost", "Legs", "Residual", "Worst stress"],
-    data.points.map((p) => [
-      `<td>${escapeHtml(p.label)}</td>`, `<td>${fmt(p.transaction_cost, 2)}</td>`, `<td>${p.n_legs}</td>`,
-      `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`]));
+  $("frontierOut").innerHTML = table(["Choice", "Status", "Cost", "Legs", "Residual", "Worst stress"],
+    data.points.map((p) => p.infeasible_reason
+      ? [`<td>${escapeHtml(p.label)}</td>`, `<td><span class="badge bad">infeasible</span></td>`,
+         `<td class="wrap" colspan="4">${escapeHtml(p.infeasible_reason)}</td>`]
+      : [`<td>${escapeHtml(p.label)}</td>`,
+         `<td>${p.status ? statusBadge(p.status) : '<span class="tag">baseline</span>'}</td>`,
+         `<td>${fmt(p.transaction_cost, 2)}</td>`, `<td>${p.n_legs}</td>`,
+         `<td>${fmt(p.penalized_residual)}</td>`, `<td>${signed(p.worst_scenario_pnl)}</td>`]), [1]);
 }
 
 async function refreshApprovals() {
@@ -290,7 +306,7 @@ async function refreshAudit() {
     data.records.map((r) => [
       `<td>${escapeHtml(r.at)}</td>`, `<td style="text-align:left">${escapeHtml(r.event)}</td>`,
       `<td style="text-align:left">${escapeHtml(r.actor)}</td>`,
-      `<td class="mono">${escapeHtml((r.detail.id || "").slice(0, 8))}</td>`,
+      `<td class="mono">${escapeHtml(String((r.detail || {}).id || "").slice(0, 8))}</td>`,
       `<td class="mono">${escapeHtml(r.hash.slice(0, 12))}</td>`]), [1, 2])
     : `<div class="empty">0 audit records.</div>`;
 }

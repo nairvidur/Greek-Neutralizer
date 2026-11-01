@@ -27,11 +27,11 @@ Keep `/healthz` and `/metrics` off the public path, because they are unauthentic
 | Refuses to run open | No tokens configured means no start |
 | Four-eyes approval | The proposer cannot approve their own proposal |
 | Approval expiry | A proposal older than 5 minutes cannot be approved or exported |
-| Unstable block | Proposals flagged unstable cannot be approved unless policy allows it |
-| Audit trail | Hash-chained JSON Lines, written and synced before each state change, with a sidecar for the head. A broken chain makes `/healthz` return 503, and blocks approvals and exports |
-| Market age | A proposal on a market older than `GN_MAX_MARKET_AGE_SECONDS` cannot be submitted, approved, or exported |
+| Unstable block | Proposals flagged unstable cannot be approved |
+| Audit trail | Hash-chained JSON Lines, written and synced before each state change, with a sidecar for the head. A broken chain makes `/healthz` return 503, and blocks submissions, approvals, rejections, and exports |
+| Market age | A proposal on a market older than `GN_MAX_MARKET_AGE_SECONDS`, or dated more than a second ahead of the service clock, cannot be submitted, approved, or exported |
 | Stability required | A proposal with legs must have run its stability check to be submitted |
-| Input validation | Unknown fields rejected, and numbers checked at construction |
+| Input validation | Unknown fields rejected, and types and values checked at construction. Instrument symbols are limited to a strict character set, so they cannot inject ticket fields or spreadsheet formulas |
 | Request size | Limited by `GN_MAX_BODY` |
 | No order routing | The package has no way to send an order |
 | Dependency audit | `pip-audit` in CI |
@@ -49,6 +49,7 @@ These are required before a regulated production deployment:
 - **Secrets management.** Tokens arrive through the environment.
 - **Rate limiting, Helm charts, and Terraform.**
 - **SBOM, signed releases, and SLSA provenance.**
+- **Locked container dependencies.** The image installs the `service` extra's version ranges from PyPI, so its versions can differ from the `uv.lock` that `pip-audit` checks.
 - **Independent penetration test.**
 
 ## Threat model
@@ -57,7 +58,7 @@ These are required before a regulated production deployment:
 |---|---|---|
 | Unauthorized hedge submission | Bearer auth | A leaked token impersonates its owner until rotated, which needs a restart |
 | Self-approved trade | Four-eyes on identity | One person with two tokens defeats it |
-| Trading on stale analysis | Approval expiry and a market fingerprint in the manifest | Five minutes is long in a fast market, so set it for your desk |
+| Trading on stale analysis | Approval expiry and a market fingerprint in the manifest | Five minutes is long in a fast market, and this release does not make it configurable |
 | Silent wrong hedge | Independent repricing, and raising on mismatch | Shared model assumptions are not caught by repricing |
 | Bad market data | Quality gates fail closed | A plausible but wrong quote passes |
 | Audit tampering | Hash chain checked on health | See above |

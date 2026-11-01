@@ -13,13 +13,21 @@ hedge is crossing the spread, fees, and impact, which is what the book actually 
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
 from greeks_neutralizer.data.quality import QualityPolicy
-from greeks_neutralizer.domain import Instrument, Position, Quote, require_finite
+from greeks_neutralizer.domain import (
+    Instrument,
+    Position,
+    Quote,
+    require_finite,
+    require_int,
+    require_symbol,
+)
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.pricing.book import EXPOSURE_NAMES, Exposure
 from greeks_neutralizer.risk.scenarios import Scenario
@@ -48,10 +56,14 @@ class HedgeCandidate:
         require_finite("impact_per_unit", self.impact_per_unit)
         if self.fee_per_unit < 0.0 or self.impact_per_unit < 0.0:
             raise ValidationError("fees and impact must be non-negative")
+        require_int("lot_size", self.lot_size)
         if self.lot_size < 1:
             raise ValidationError("lot_size must be at least 1")
         for name, value in (("max_buy", self.max_buy), ("max_sell", self.max_sell)):
-            if value is not None and value < 0:
+            if value is None:
+                continue
+            require_int(name, value)
+            if value < 0:
                 raise ValidationError(f"{name} must be non-negative")
 
 
@@ -96,8 +108,12 @@ class GreekTarget:
     weight: float | None = None
 
     def __post_init__(self) -> None:
+        require_symbol("underlying", self.underlying)
         if not isinstance(self.greek, GreekName):
             raise ValidationError(f"greek must be a GreekName, got {self.greek!r}")
+        for name, value in (("lower", self.lower), ("upper", self.upper), ("weight", self.weight)):
+            if value is not None:
+                require_finite(name, value)
         if self.lower is not None and self.upper is not None and self.lower > self.upper:
             raise ValidationError(f"{self.greek.value}: lower exceeds upper")
         if self.weight is not None and self.weight < 0.0:
@@ -141,6 +157,8 @@ class HedgeConfig:
             require_finite(name, getattr(self, name))
         if self.premium_budget is not None:
             require_finite("premium_budget", self.premium_budget)
+        if not isinstance(self.max_quote_age, timedelta):
+            raise ValidationError(f"max_quote_age must be a timedelta, got {self.max_quote_age!r}")
         for name in ("require_quote_size", "allow_extrapolated_vol"):
             if not isinstance(getattr(self, name), bool):
                 raise ValidationError(f"{name} must be true or false")
@@ -150,10 +168,13 @@ class HedgeConfig:
             raise ValidationError("risk_aversion and cvar_weight must be non-negative")
         if not 0.0 < self.cvar_alpha < 1.0:
             raise ValidationError("cvar_alpha must be in (0, 1)")
-        if self.max_legs is not None and self.max_legs < 1:
-            raise ValidationError("max_legs must be at least 1")
+        if self.max_legs is not None:
+            require_int("max_legs", self.max_legs)
+            if self.max_legs < 1:
+                raise ValidationError("max_legs must be at least 1")
         if self.ticket_cost < 0.0:
             raise ValidationError("ticket_cost must be non-negative")
+        require_int("max_lots_per_leg", self.max_lots_per_leg)
         if self.max_lots_per_leg < 1:
             raise ValidationError("max_lots_per_leg must be at least 1")
         if not 0.0 < self.mip_gap < 1.0:
@@ -161,6 +182,12 @@ class HedgeConfig:
 
     def quality_policy(self) -> QualityPolicy:
         return QualityPolicy(max_age=self.max_quote_age, require_size=self.require_quote_size)
+
+
+def _reject_duplicates(kind: str, names: Sequence[str]) -> None:
+    repeated = sorted(name for name, seen in Counter(names).items() if seen > 1)
+    if repeated:
+        raise ValidationError(f"duplicate {kind}: {repeated}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +202,9 @@ class HedgeProblem:
         keys = [(t.underlying, t.greek) for t in self.targets]
         if len(keys) != len(set(keys)):
             raise ValidationError("duplicate target for the same underlying and Greek")
+        # Legs, limits, and scenario P&L are all looked up by these, so each must name one thing.
+        _reject_duplicates("candidate", [c.instrument.key for c in self.candidates])
+        _reject_duplicates("scenario", [s.name for s in self.scenarios])
         if not self.targets and not self.scenarios:
             raise ValidationError("a hedge problem needs targets or scenarios to act on")
         if self.config.cvar_weight > 0.0 and not self.scenarios:
@@ -186,6 +216,7 @@ class ProposalStatus(StrEnum):
     WITHIN_GAP = "within_gap"
     NO_TRADE = "no_trade"
     NO_USABLE_CANDIDATES = "no_usable_candidates"
+    PARTIAL_COVERAGE = "partial_coverage"
     UNSTABLE = "unstable"
 
 

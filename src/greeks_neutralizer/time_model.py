@@ -15,12 +15,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
 
-from greeks_neutralizer.domain import OptionContract, require_aware
+from greeks_neutralizer.domain import NEW_YORK, require_aware
 from greeks_neutralizer.errors import ValidationError
 
-NEW_YORK = ZoneInfo("America/New_York")
 SECONDS_PER_YEAR = 365.0 * 86400.0
 
 
@@ -125,7 +123,3 @@ class VarianceClock:
 
 
 CALENDAR_CLOCK = VarianceClock()
-
-
-def is_expired(contract: OptionContract, as_of: datetime) -> bool:
-    return contract.expiry <= as_of

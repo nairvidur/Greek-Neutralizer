@@ -90,7 +90,9 @@ def test_stress_and_grid(client):
     stress = client.post("/v1/stress", headers=ALICE, json=body)
     assert stress.status_code == 200
     assert len(stress.json()["pnl"]) == 7
-    grid = client.post("/v1/grid", headers=ALICE, json=body)
+    grid = client.post(
+        "/v1/grid", headers=ALICE, json={"book": body["book"], "market": body["market"]}
+    )
     assert grid.status_code == 200
     data = grid.json()
     assert len(data["pnl"]) == len(data["spot_shocks"])

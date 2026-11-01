@@ -13,6 +13,7 @@ from numpy.testing import assert_allclose
 
 from greeks_neutralizer.domain import LinearInstrument, LinearKind, Position, Quote
 from greeks_neutralizer.errors import HedgeInfeasibleError
+from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import (
     hedge_decay_forecast,
     hedge_frontier,
@@ -266,10 +267,25 @@ def test_frontier_is_monotone_on_a_large_universe():
     assert residuals[2] <= residuals[0] + 150.0
 
 
-def test_screen_keeps_small_problems_whole_and_does_not_change_answers():
-    small = solve()
-    assert small.verification.passed
-    assert len(CANDIDATES) <= 40
+def test_screen_on_a_large_universe_keeps_the_leg_that_offsets_the_book(monkeypatch):
+    # Oracle: buying back the exact contract the book is short flattens every Greek, and it has the
+    # tightest market here, so any other leg only adds cost. It is listed last, so that a screen
+    # keeping an arbitrary subset would lose it.
+    exact = option_candidate("call", 100, 60, half=0.01)
+    others = [
+        option_candidate("call", 80 + 0.5 * i, 60, half=0.5)
+        for i in range(60)
+        if 80 + 0.5 * i != 100
+    ]
+    universe = (*others, exact)
+    assert len(universe) > optimizer._MAX_INTEGER_CANDIDATES
+    book = (Position(exact.instrument, -20),)
+
+    screened = solve(book=book, candidates=universe)
+    assert screened.quantities == {exact.instrument.key: 20}
+
+    monkeypatch.setattr(optimizer, "_MAX_INTEGER_CANDIDATES", len(universe))
+    assert solve(book=book, candidates=universe).quantities == screened.quantities
 
 
 def test_integrality_cost_is_reported_when_material():
@@ -460,15 +476,19 @@ def test_manifest_changes_with_inputs_and_replay_is_exact():
 
 
 def test_stability_condition_number_is_visible_for_near_identical_hedges():
+    # The caps force the trade across the twins, whose nearly parallel columns are ill-conditioned.
     twins = (
-        option_candidate("call", 100, 60),
-        option_candidate("call", 100.01, 60),
-        option_candidate("call", 100.02, 60),
+        option_candidate("call", 100, 60, max_buy=12, max_sell=12),
+        option_candidate("call", 100.01, 60, max_buy=12, max_sell=12),
+        option_candidate("call", 100.02, 60, max_buy=12, max_sell=12),
     )
-    p = solve(candidates=twins, config=HedgeConfig(risk_aversion=10.0), run_stability=True)
+    book = (Position(euro("call", 100, 60), -30),)
+    p = solve(
+        book=book, candidates=twins, config=HedgeConfig(risk_aversion=10.0), run_stability=True
+    )
+    assert len(p.legs) > 1
     assert p.stability is not None
-    if len(p.legs) > 1:
-        assert p.stability.condition_number > 100.0
+    assert p.stability.condition_number > 100.0
 
 
 def test_singular_gamma_vega_from_one_expiry_is_not_called_unstable():

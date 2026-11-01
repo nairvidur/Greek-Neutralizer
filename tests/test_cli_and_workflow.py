@@ -29,7 +29,6 @@ from greeks_neutralizer.workflow import (
     ProposalStore,
     State,
     WorkflowError,
-    WorkflowPolicy,
     tickets_csv,
     tickets_fix,
     verify_audit_log,
@@ -288,14 +287,6 @@ def test_four_eyes_blocks_self_approval(store, proposal):
     assert store.get(record.id).state is State.PROPOSED
 
 
-def test_four_eyes_can_be_disabled_explicitly(tmp_path, proposal):
-    store = ProposalStore(
-        AuditLog(tmp_path / "a.jsonl"), WorkflowPolicy(require_second_approver=False), Clock()
-    )
-    record = store.submit(proposal, "alice")
-    assert store.approve(record.id, "alice").state is State.APPROVED
-
-
 def test_stale_proposal_cannot_be_approved_or_exported(store, proposal):
     record = store.submit(proposal, "alice")
     store.clock.now += timedelta(minutes=6)
@@ -332,7 +323,7 @@ def test_repeat_approval_is_a_no_op(store, proposal):
     assert store.approve(record.id, "bob") == first
 
 
-def test_unstable_proposal_needs_policy_to_approve(store, proposal):
+def test_unstable_proposal_cannot_be_approved(store, proposal):
     from dataclasses import replace
 
     unstable = replace(proposal, status=ProposalStatus.UNSTABLE)

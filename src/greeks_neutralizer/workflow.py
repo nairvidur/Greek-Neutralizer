@@ -29,12 +29,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from greeks_neutralizer.domain import LinearInstrument, OptionContract, OptionRight
+from greeks_neutralizer.domain import NEW_YORK, LinearInstrument, OptionContract, OptionRight
 from greeks_neutralizer.errors import GNError, ValidationError
 from greeks_neutralizer.hedging.problem import HedgeProposal, ProposalStatus
-from greeks_neutralizer.time_model import NEW_YORK
 
 _GENESIS = "0" * 64
+_MARKET_CLOCK_TOLERANCE = timedelta(seconds=1)
 
 
 class WorkflowError(GNError):
@@ -50,9 +50,7 @@ class State(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class WorkflowPolicy:
-    require_second_approver: bool = True
     approval_valid_for: timedelta = timedelta(minutes=5)
-    allow_unstable: bool = False
     max_market_age: timedelta = timedelta(minutes=15)
 
 
@@ -68,8 +66,28 @@ class ProposalRecord:
     reason: str = ""
 
 
+def _parse_record(line: str) -> dict[str, Any] | None:
+    """One audit line as a record, or None if the line is damaged."""
+    try:
+        record = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("hash"), str):
+        return None
+    return record
+
+
+def _open_log(path: Path) -> io.TextIOWrapper:
+    # Undecodable bytes become replacement characters, which fail the hash rather than raising.
+    return path.open(encoding="utf-8", errors="replace")
+
+
 class AuditLog:
-    """Hash-chained append-only log. Safe across threads in one process."""
+    """Hash-chained append-only log. Safe across threads in one process.
+
+    Readers go through `verify` and `read`, which take the same lock as `append`. Between the log
+    and the sidecar being written, the two legitimately disagree, and nobody may look then.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -81,14 +99,14 @@ class AuditLog:
         if not self.path.exists():
             return _GENESIS, 0
         head, count = _GENESIS, 0
-        with self.path.open() as handle:
+        with _open_log(self.path) as handle:
             for line in handle:
                 if not line.strip():
                     continue
-                try:
-                    head = json.loads(line)["hash"]
-                except (json.JSONDecodeError, KeyError):
+                record = _parse_record(line)
+                if record is None:
                     continue  # A damaged log still opens, and verification reports the damage.
+                head = record["hash"]
                 count += 1
         return head, count
 
@@ -110,12 +128,58 @@ class AuditLog:
                 os.fsync(handle.fileno())
             self._head = digest
             self._count += 1
-            _sidecar(self.path).write_text(json.dumps({"head": digest, "count": self._count}))
+            _write_sidecar(_sidecar(self.path), digest, self._count)
             return digest
+
+    def verify(self) -> AuditVerification:
+        with self._lock:
+            return verify_audit_log(self.path)
+
+    def read(self) -> tuple[list[dict[str, Any]], int]:
+        """The readable records in order, and how many lines were too damaged to read."""
+        records: list[dict[str, Any]] = []
+        unreadable = 0
+        with self._lock:
+            if not self.path.exists():
+                return records, unreadable
+            with _open_log(self.path) as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    record = _parse_record(line)
+                    if record is None:
+                        unreadable += 1
+                    else:
+                        records.append(record)
+        return records, unreadable
 
 
 def _sidecar(path: Path) -> Path:
     return path.with_name(path.name + ".head")
+
+
+def _write_sidecar(path: Path, head: str, count: int) -> None:
+    """Replace the sidecar in one step, so a crash leaves the old one or the new one, never part."""
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w") as handle:
+        handle.write(json.dumps({"head": head, "count": count}))
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+
+
+def _read_sidecar(path: Path) -> tuple[str, int] | None:
+    """The recorded head and count, or None if the sidecar cannot be read as one."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    head, count = data.get("head"), data.get("count")
+    if not isinstance(head, str) or isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return head, count
 
 
 def _record_hash(body: dict[str, Any]) -> str:
@@ -134,7 +198,9 @@ def verify_audit_log(path: Path) -> AuditVerification:
     """Recompute the chain from the start, then compare the end of it with the sidecar.
 
     The chain finds an edited, removed, or reordered record. The sidecar finds what the chain alone
-    cannot: a truncated tail or a deleted log, both of which leave a valid prefix.
+    cannot: a truncated tail or a deleted log, both of which leave a valid prefix. Every problem is
+    a failed verification rather than an exception, because the callers are the incident response.
+    This does not lock: inside a running process, use `AuditLog.verify`.
     """
     previous = _GENESIS
     count = 0
@@ -143,30 +209,57 @@ def verify_audit_log(path: Path) -> AuditVerification:
         if sidecar.exists():
             return AuditVerification(False, 0, 1, "the log is missing, but records were written")
         return AuditVerification(True, 0, None)
-    with path.open() as handle:
-        for number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
+    try:
+        with _open_log(path) as handle:
+            for number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                record = _parse_record(line)
+                if record is None:
+                    return AuditVerification(False, count, number, "unreadable record")
                 digest = record.pop("hash")
-            except (json.JSONDecodeError, KeyError) as exc:
-                return AuditVerification(False, count, number, f"unreadable record: {exc}")
-            if record.get("prev") != previous:
-                return AuditVerification(False, count, number, "chain link broken")
-            if _record_hash(record) != digest:
-                return AuditVerification(False, count, number, "record contents changed")
-            previous = digest
-            count += 1
-    if sidecar.exists():
-        head = json.loads(sidecar.read_text())
-        if head["count"] != count or head["head"] != previous:
-            return AuditVerification(
-                False,
-                count,
-                count + 1,
-                f"tail of the log is missing: {head['count']} records written, {count} present",
-            )
+                if record.get("prev") != previous:
+                    return AuditVerification(False, count, number, "chain link broken")
+                if _record_hash(record) != digest:
+                    return AuditVerification(False, count, number, "record contents changed")
+                previous = digest
+                count += 1
+    except OSError as exc:
+        return AuditVerification(False, count, count + 1, f"the log cannot be read: {exc}")
+    return _compare_with_sidecar(sidecar, previous, count)
+
+
+def _compare_with_sidecar(sidecar: Path, head: str, count: int) -> AuditVerification:
+    if not sidecar.exists():
+        if count == 0:
+            return AuditVerification(True, 0, None)
+        return AuditVerification(
+            False, count, 1, f"the log has {count} records, but its head sidecar is missing"
+        )
+    recorded = _read_sidecar(sidecar)
+    if recorded is None:
+        return AuditVerification(False, count, count + 1, "the head sidecar cannot be read")
+    recorded_head, written = recorded
+    if count > written:
+        return AuditVerification(
+            False,
+            count,
+            written + 1,
+            f"the log is longer than its head sidecar: {count} records present, {written} "
+            "recorded. Either a write was interrupted after the record was committed, or records "
+            "were added",
+        )
+    if count < written:
+        return AuditVerification(
+            False,
+            count,
+            count + 1,
+            f"tail of the log is missing: {written} records written, {count} present",
+        )
+    if recorded_head != head:
+        return AuditVerification(
+            False, count, max(count, 1), "the log's last hash does not match its head sidecar"
+        )
     return AuditVerification(True, count, None)
 
 
@@ -184,7 +277,7 @@ class ProposalStore:
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def _check_chain(self) -> None:
-        check = verify_audit_log(self.audit.path)
+        check = self.audit.verify()
         if not check.ok:
             raise WorkflowError(
                 f"the audit log failed verification at line {check.first_bad_line}: "
@@ -195,6 +288,11 @@ class ProposalStore:
         """The market behind a proposal, against the wall clock. Approval freshness cannot see this:
         a proposal created just now from a months-old market is still months out of date."""
         age = now - proposal.manifest.as_of
+        if age < -_MARKET_CLOCK_TOLERANCE:
+            raise WorkflowError(
+                f"the market behind this proposal is dated {-age.total_seconds():.0f}s in the "
+                "future: check the feed's clock and its UTC offset, then re-propose"
+            )
         if age > self.policy.max_market_age:
             raise WorkflowError(
                 f"the market behind this proposal is {age.total_seconds():.0f}s old, past the "
@@ -246,6 +344,7 @@ class ProposalStore:
 
     def approve(self, record_id: str, actor: str, reason: str = "") -> ProposalRecord:
         _require_actor(actor)
+        _require_reason(reason)
         with self._lock:
             # The clock is read before the state, so nothing can intervene between check and change.
             now = self.clock()
@@ -254,11 +353,11 @@ class ProposalStore:
                 if record.state is State.APPROVED and record.decided_by == actor:
                     return record  # Idempotent: the state the caller asked for already holds.
                 raise WorkflowError(f"cannot approve a proposal that is {record.state.value}")
-            if self.policy.require_second_approver and actor == record.created_by:
+            if actor == record.created_by:
                 raise WorkflowError("four-eyes: the proposer cannot approve their own proposal")
-            if record.proposal.status is ProposalStatus.UNSTABLE and not self.policy.allow_unstable:
+            if record.proposal.status is ProposalStatus.UNSTABLE:
                 raise WorkflowError(
-                    "this proposal is unstable under small input changes, so policy blocks approval"
+                    "this proposal is unstable under small input changes, so it cannot be approved"
                 )
             self._check_chain()
             self._check_fresh(record, now)
@@ -272,6 +371,7 @@ class ProposalStore:
 
     def reject(self, record_id: str, actor: str, reason: str) -> ProposalRecord:
         _require_actor(actor)
+        _require_reason(reason)
         if not reason.strip():
             raise ValidationError("a rejection needs a reason")
         with self._lock:
@@ -281,6 +381,8 @@ class ProposalStore:
                 return record
             if record.state is not State.PROPOSED:
                 raise WorkflowError(f"cannot reject a proposal that is {record.state.value}")
+            # Appending rewrites the sidecar, which would hide a truncated tail.
+            self._check_chain()
             self.audit.append("rejected", actor, {"id": record_id, "reason": reason}, now)
             updated = replace(
                 record, state=State.REJECTED, decided_by=actor, decided_at=now, reason=reason
@@ -331,6 +433,11 @@ class ProposalStore:
 def _require_actor(actor: str) -> None:
     if not actor or not actor.strip():
         raise ValidationError("an authenticated actor is required")
+
+
+def _require_reason(reason: str) -> None:
+    if not isinstance(reason, str):
+        raise ValidationError(f"a reason must be text, got {reason!r}")
 
 
 def tickets_csv(proposal: HedgeProposal, proposal_id: str) -> str:
@@ -413,6 +520,14 @@ def tickets_fix(proposal: HedgeProposal, proposal_id: str) -> str:
             ]
         else:
             assert isinstance(instrument, LinearInstrument)
-            fields += [(55, instrument.symbol), (167, "FUT" if instrument.expiry else "CS")]
+            if instrument.expiry is None:
+                fields += [(55, instrument.symbol), (167, "CS")]
+            else:
+                fields += [
+                    (55, instrument.symbol),
+                    (167, "FUT"),
+                    (541, instrument.expiry.astimezone(NEW_YORK).strftime("%Y%m%d")),
+                    (231, f"{instrument.multiplier:g}"),
+                ]
         lines.append("|".join(f"{tag}={value}" for tag, value in fields) + "|")
     return "\n".join(lines) + ("\n" if lines else "")

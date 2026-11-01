@@ -26,7 +26,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
 
 import numpy as np
 from numpy.typing import NDArray
@@ -65,17 +64,6 @@ EXPOSURE_NAMES: tuple[str, ...] = (
 
 
 MAX_PLAUSIBLE_VOL = 10.0
-
-
-class SmileRegime(StrEnum):
-    """How the smile responds to spot, which changes the delta you should actually hedge.
-
-    STICKY_STRIKE: vol at a fixed strike does not move (Black delta).
-    STICKY_MONEYNESS: the smile moves with the forward (also called sticky delta).
-    """
-
-    STICKY_STRIKE = "sticky_strike"
-    STICKY_MONEYNESS = "sticky_moneyness"
 
 
 @dataclass(frozen=True, slots=True)

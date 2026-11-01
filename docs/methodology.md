@@ -33,8 +33,8 @@ Dividends use the **escrowed** model: volatility applies to spot less the PV of 
 This is an assumption.
 QuantLib's default `Spot` model prices the same test calls about 0.12 higher.
 
-Delta, gamma, vega, theta, rho, vanna, and volga come from bumps through the control-variate price.
-Charm, veta, speed, zomma, and color stay European approximations for American options.
+Delta, gamma, vega, theta, rho, vanna, volga, and charm come from bumps through the control-variate price.
+Veta, speed, zomma, and color stay European approximations for American options.
 
 ## Surfaces
 

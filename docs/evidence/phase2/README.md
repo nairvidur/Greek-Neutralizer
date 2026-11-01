@@ -42,8 +42,8 @@ The headline figures are in this table.
 | Quotes in payload | 27,760 | 11,820 (84 non-standard excluded) |
 | Expiries fit | 53 of 53 | 30 of 30 |
 | Vega-weighted fit error, median | 0.12 vol pts | 0.18 vol pts |
-| Quoted-range butterfly, minimum g (must be at least 0) | +0.110 | +0.022 |
-| Quoted-range calendar, worst relative gap | -0.006% | -0.001% |
+| Quoted-range butterfly, minimum g (must be at least 0) | +0.101 | +0.022 |
+| Quoted-range calendar, worst relative gap | -0.005% | -0.0005% |
 | Implied vol, median difference from Cboe | 0.10 vol pts | 0.19 vol pts |
 | Delta, median difference from Cboe | 0.0038 | 0.0015 |
 | Gamma, median relative difference from Cboe | 5.5% | 2.1% |
@@ -58,7 +58,7 @@ The synthetic tests passed before any of these were fixed, and each was found on
    As-of now comes from the last trade times.
 3. Regressing the discount factor from American C - P gave implied rates of -6%.
    The discount is now an input, and the box rate is computed only from European chains.
-4. The index's last print (7580.07) was stale against option parity (7590.09).
+4. The index's last print (7580.07) was stale against option parity (7590.05).
    Spot now comes from the nearest parity forward.
 5. 84 rows inside SPY were adjusted contracts (root `B1SP`). They are now excluded and counted.
 6. `check_grid` measured variance at the SVI `m` parameter rather than at the money, which marked unquoted strikes as core arbitrage.

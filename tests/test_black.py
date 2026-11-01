@@ -7,7 +7,6 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from numpy.testing import assert_allclose
-from scipy.stats import norm
 
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.pricing.black import black_greeks, normal_cdf
@@ -89,17 +88,17 @@ def test_parity_and_bounds(S, moneyness, T, r, q, v):
     assert put.price[0] <= K * np.exp(-r * T) * (1 + 1e-12)
 
 
-def test_far_wing_premium_positive_and_relatively_accurate():
-    # Reference from the exact integral form, using log-survival arithmetic via mpmath-free scipy.
-    S, K, T, v = 100.0, 200.0, 0.05, 0.2
-    g = black_greeks(S, K, T, 0.0, 0.0, v, 1)
-    s = v * np.sqrt(T)
-    d1 = np.log(S / K) / s + s / 2
-    d2 = d1 - s
-    # Laplace-side asymptotic is exact in the limit; assert positivity and order of magnitude.
-    upper_bound = S * norm.sf(-d1)
-    assert 0.0 < g.price[0] < upper_bound
-    assert K * norm.sf(-d2) > 0.0
+@pytest.mark.parametrize(
+    ("K", "T", "vol", "reference", "rtol"),
+    [
+        # Reference: S N(d1) - K N(d2) at 80 digits with mpmath, r = q = 0, S = 100. At these
+        # tolerances, that difference in double precision fails: it is off by 5.6e-12 and 1.5e-9.
+        (200.0, 0.05, 0.2, 7.1013615483982070581e-55, 1e-12),
+        (110.0, 0.01, 0.03, 8.293222808927537721e-224, 1e-11),
+    ],
+)
+def test_far_wing_premium_keeps_relative_accuracy(K, T, vol, reference, rtol):
+    assert_allclose(black_greeks(100.0, K, T, 0.0, 0.0, vol, 1).price[0], reference, rtol=rtol)
 
 
 def test_zero_vol_is_discounted_forward_intrinsic():

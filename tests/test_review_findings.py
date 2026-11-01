@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
@@ -12,11 +12,10 @@ from numpy.testing import assert_allclose
 from greeks_neutralizer.backtest.engine import DayMarket, run_backtest
 from greeks_neutralizer.backtest.policies import DeltaDaily, Unhedged
 from greeks_neutralizer.domain import (
+    NEW_YORK,
     ExerciseStyle,
     LinearInstrument,
     LinearKind,
-    OptionContract,
-    OptionRight,
     Position,
     Quote,
 )
@@ -41,8 +40,8 @@ from greeks_neutralizer.pricing.book import value_book, value_options
 from greeks_neutralizer.risk.measures import attribute_pnl
 from greeks_neutralizer.risk.scenarios import Scenario, shock_snapshot, taylor_vs_full
 from greeks_neutralizer.surface import SviSlice, SviSurface
-from greeks_neutralizer.time_model import NEW_YORK, VarianceClock, calendar_years
-from tests.conftest import AS_OF, american, euro, expiry_in, flat_snapshot
+from greeks_neutralizer.time_model import VarianceClock, calendar_years
+from tests.conftest import AS_OF, american, euro, expiry_in
 
 
 def snapshot_with(
@@ -464,10 +463,3 @@ def test_fingerprint_covers_clock_and_quoted_ranges():
     c = snapshot_with().replaced("XYZ", surface=s)
     d = snapshot_with().replaced("XYZ", surface=SviSurface(s.slices, ((-0.2, 0.2),)))
     assert c.fingerprint() != d.fingerprint()
-
-
-def test_helpers_stay_in_use():
-    assert isinstance(flat_snapshot(), MarketSnapshot)
-    assert time(16).hour == 16
-    assert OptionRight.CALL.omega == 1
-    assert isinstance(american("call", 100, 1), OptionContract)
