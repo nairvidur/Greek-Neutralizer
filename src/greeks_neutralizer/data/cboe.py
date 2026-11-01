@@ -7,7 +7,7 @@ terms of use apply. Fetching is left to the caller so core code does no I/O; thi
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -87,15 +87,20 @@ def parse_cboe_delayed(payload: Mapping[str, Any]) -> ParsedChain:
     Roots outside the underlying's standard family (an adjusted contract such as B1SP inside SPY)
     have a non-standard deliverable, and so cannot be valued as 100 shares of the underlying.
     """
-    data = payload.get("data")
+    data = payload.get("data") if isinstance(payload, Mapping) else None
     if not isinstance(data, Mapping):
         raise MarketDataError("Cboe payload has no 'data' object")
     data = cast(Mapping[str, Any], data)
     timestamp = payload.get("timestamp")
     if not isinstance(timestamp, str):
         raise MarketDataError("Cboe payload has no 'timestamp'")
+    if not isinstance(data.get("options", []), Sequence):
+        raise MarketDataError("Cboe payload's 'options' is not a list")
     # Payload timestamps are UTC, without a zone designator.
-    generated = datetime.fromisoformat(timestamp).replace(tzinfo=UTC)
+    try:
+        generated = datetime.fromisoformat(timestamp).replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise MarketDataError(f"Cboe payload's 'timestamp' is not a time: {exc}") from exc
     as_of = _quote_time(data, generated)
     symbol = str(data.get("symbol", "")).lstrip("^_")
     standard_roots = STANDARD_ROOTS.get(symbol, frozenset({symbol}))

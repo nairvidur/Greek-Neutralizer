@@ -6,12 +6,15 @@ working, and hold the service to what the runbook promises about backup, restore
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +63,26 @@ def test_restore_drill_recovers_and_refuses_damaged_backups(tmp_path: Path) -> N
     assert crash["attempts"][0]["acknowledged"] > 0
     assert crash["acknowledged_but_lost"] == 0
     assert code == 0
+
+
+def test_a_port_taken_before_the_bind_starts_again_on_a_new_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location("load_test", ROOT / "scripts" / "load_test.py")
+    assert spec is not None
+    assert spec.loader is not None
+    load_test = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(load_test)
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        taken_port = taken.getsockname()[1]
+        real_free_port = load_test.free_port
+        ports = iter([taken_port])
+        monkeypatch.setattr(load_test, "free_port", lambda: next(ports, None) or real_free_port())
+        with load_test.running_service(tmp_path / "audit.jsonl") as base:
+            assert not base.endswith(f":{taken_port}")
+            assert httpx2.get(f"{base}/healthz", timeout=10.0).status_code == 200
 
 
 def test_load_test_accounts_for_every_action(tmp_path: Path) -> None:

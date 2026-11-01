@@ -36,7 +36,7 @@ from typing import Any
 import httpx2
 
 sys.path.insert(0, str(Path(__file__).parent))
-from load_test import client, free_port, running_service, start_service, wait_until_answering
+from load_test import client, running_service, start_on_a_free_port
 
 from greeks_neutralizer._version import __version__
 from greeks_neutralizer.workflow import verify_audit_log
@@ -215,11 +215,8 @@ def crash_recovery(work: Path, crashes: int) -> dict[str, Any]:
     for attempt in range(crashes):
         log = work / f"crash_{attempt}" / "audit.jsonl"
         log.parent.mkdir()
-        port = free_port()
-        base = f"http://127.0.0.1:{port}"
         with tempfile.TemporaryFile() as output:
-            process = start_service(log, port, output)
-            wait_until_answering(base, process, output, frozenset({200}))
+            process, base = start_on_a_free_port(log, output, frozenset({200}))
             with client(base) as http:
                 request = _hedge_request(http)
 

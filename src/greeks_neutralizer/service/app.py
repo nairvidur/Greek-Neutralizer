@@ -55,10 +55,10 @@ from greeks_neutralizer.risk.scenarios import book_scenario_pnl, spot_vol_grid
 from greeks_neutralizer.schema import (
     SCENARIO_SETS,
     book_to_json,
-    breaches_to_json,
     check_fields,
     decay_to_json,
     ladder_to_json,
+    limit_check_to_json,
     liquidity_estimates,
     liquidity_to_json,
     parse_book,
@@ -356,7 +356,8 @@ def create_app(
                 "pnl": [
                     {"scenario": s.name, "pnl": float(v)}
                     for s, v in zip(scenarios, pnl, strict=True)
-                ]
+                ],
+                "issues": list(value_book(book, snapshot).issues),
             }
         )
 
@@ -374,12 +375,13 @@ def create_app(
                 "spot_shocks": list(spots),
                 "vol_shocks": list(vols),
                 "pnl": np.asarray(pnl).reshape(len(spots), len(vols)).tolist(),
+                "issues": list(value_book(book, snapshot).issues),
             }
         )
 
     @app.post("/v1/ladder")
     def ladder(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
-        """Option exposures by New York expiry date, shortest first."""
+        """Option and future exposures by New York expiry date, shortest first."""
         check_fields(payload, "request", {"book", "market"})
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
@@ -392,8 +394,7 @@ def create_app(
         book = parse_book(payload.get("book"))
         snapshot = parse_market(payload.get("market"))
         risk_limits = parse_limits(payload.get("limits"))
-        breaches = check_limits(book, snapshot, risk_limits)
-        return _safe(breaches_to_json(breaches, len(risk_limits)))
+        return _safe(limit_check_to_json(check_limits(book, snapshot, risk_limits)))
 
     @app.post("/v1/liquidity")
     def liquidity(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:
@@ -409,10 +410,10 @@ def create_app(
         snapshot = parse_market(payload.get("market"))
         underlying = payload["underlying"]
         if "days" in payload:
-            steps = hedge_decay_forecast(book, snapshot, underlying, parse_days(payload["days"]))
+            forecast = hedge_decay_forecast(book, snapshot, underlying, parse_days(payload["days"]))
         else:
-            steps = hedge_decay_forecast(book, snapshot, underlying)
-        return _safe(decay_to_json(steps, underlying))
+            forecast = hedge_decay_forecast(book, snapshot, underlying)
+        return _safe(decay_to_json(forecast, underlying))
 
     @app.post("/v1/hedge")
     def hedge(payload: dict[str, Any], user: str = Depends(actor)) -> dict[str, Any]:

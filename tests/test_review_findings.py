@@ -394,8 +394,13 @@ def test_american_theta_does_not_jump_before_an_ex_date():
     contract = american("call", 100, 30)
     far = snapshot_with(dividends=(CashDividend(AS_OF + timedelta(days=5), 2.0),))
     near = snapshot_with(dividends=(CashDividend(AS_OF + timedelta(hours=12), 2.0),))
-    assert value_options([contract], far).greeks.theta[0] < 0.0
-    assert value_options([contract], near).greeks.theta[0] < 0.0
+    far_theta = value_options([contract], far).greeks.theta[0]
+    near_theta = value_options([contract], near).greeks.theta[0]
+    assert far_theta < 0.0
+    assert near_theta < 0.0
+    # Holding S fixed across the 2.00 ex-date would add about delta * 2.00 per day, against a theta
+    # of about 0.05, so a bump stepping over the date moves theta many times its own size.
+    assert abs(near_theta - far_theta) < 0.5 * abs(far_theta)
 
 
 def test_tree_discounts_dividends_on_the_curve():

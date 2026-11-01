@@ -43,8 +43,13 @@ from greeks_neutralizer.workflow import verify_audit_log
 
 TOKENS = {"alice": "load-token-alice", "bob": "load-token-bob", "carol": "load-token-carol"}
 READY_TIMEOUT_SECONDS = 60.0
+START_ATTEMPTS = 5
 REQUEST_TIMEOUT_SECONDS = 120.0
 GROWTH_REFRESH_EVERY = 200
+
+
+class PortTakenError(RuntimeError):
+    """The service could not bind: another process took its port after it was found free."""
 
 
 def free_port() -> int:
@@ -82,7 +87,9 @@ def wait_until_answering(
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output.seek(0)
-            raise RuntimeError(f"the service exited at startup: {output.read().decode()[-2000:]}")
+            log = output.read().decode()
+            kind = PortTakenError if "address already in use" in log.lower() else RuntimeError
+            raise kind(f"the service exited at startup: {log[-2000:]}")
         with contextlib.suppress(httpx2.TransportError):
             status = httpx2.get(f"{base}/healthz", timeout=2.0).status_code
             if status in accepted:
@@ -91,15 +98,33 @@ def wait_until_answering(
     raise RuntimeError(f"the service was not ready within {READY_TIMEOUT_SECONDS:.0f}s")
 
 
-@contextlib.contextmanager
-def running_service(audit_log: Path, accepted: frozenset[int] = frozenset({200})) -> Iterator[str]:
-    """Started on a free port, and stopped with SIGTERM. Yields its base URL."""
-    port = free_port()
-    with tempfile.TemporaryFile() as output:
+def start_on_a_free_port(
+    audit_log: Path, output: Any, accepted: frozenset[int]
+) -> tuple[subprocess.Popen[bytes], str]:
+    """A started service and its base URL. A port can be taken between finding it and binding it,
+    so a failed bind starts again on a new port. Any other failure raises at once."""
+    for attempt in range(1, START_ATTEMPTS + 1):
+        port = free_port()
+        output.seek(0)
+        output.truncate()
         process = start_service(audit_log, port, output)
         base = f"http://127.0.0.1:{port}"
         try:
             wait_until_answering(base, process, output, accepted)
+        except PortTakenError:
+            if attempt == START_ATTEMPTS:
+                raise
+        else:
+            return process, base
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+@contextlib.contextmanager
+def running_service(audit_log: Path, accepted: frozenset[int] = frozenset({200})) -> Iterator[str]:
+    """Started on a free port, and stopped with SIGTERM. Yields its base URL."""
+    with tempfile.TemporaryFile() as output:
+        process, base = start_on_a_free_port(audit_log, output, accepted)
+        try:
             yield base
         finally:
             process.send_signal(signal.SIGTERM)

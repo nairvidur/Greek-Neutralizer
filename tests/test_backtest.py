@@ -23,11 +23,19 @@ from greeks_neutralizer.backtest.proxy import (
     third_friday,
 )
 from greeks_neutralizer.backtest.report import compare, max_drawdown, policy_stats, stress_days
-from greeks_neutralizer.domain import NEW_YORK, OptionRight, Position, Quote
+from greeks_neutralizer.domain import (
+    NEW_YORK,
+    LinearInstrument,
+    OptionContract,
+    OptionRight,
+    Position,
+    Quote,
+)
 from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.hedging.problem import GreekName, GreekTarget, HedgeCandidate, HedgeConfig
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.black import black_greeks
+from greeks_neutralizer.time_model import calendar_years
 
 START = date(2024, 1, 2)
 
@@ -129,12 +137,28 @@ def test_financing_charges_interest_on_marked_value():
     assert_allclose(result.days[0].financing, value * 0.05 / 365, rtol=1e-6)
 
 
+class OpenOnce:
+    """Opens one position on the first day, and never trades again."""
+
+    def __init__(self, position):
+        self.position = position
+        self.opened = False
+
+    def trades(self, day, holdings):
+        if self.opened:
+            return ()
+        self.opened = True
+        return (self.position,)
+
+
 def test_expiry_settles_at_intrinsic_then_position_disappears():
     contract = xyz_call(days=1)
-    spots = [100.0, 110.0, 110.0, 110.0]
-    result = run_backtest(NoCostMarket(spots), FixedBook(Position(contract, 1)), Unhedged())
+    # Spot keeps moving after expiry, so a position that had not gone would keep making P&L.
+    spots = [100.0, 110.0, 120.0, 130.0]
+    result = run_backtest(NoCostMarket(spots), OpenOnce(Position(contract, 1)), Unhedged())
     v0 = black_greeks(100.0, 100.0, 1 / 365, 0.0, 0.0, 0.2, 1).price[0]
     assert_allclose(result.days[0].book_pnl, 100 * (10.0 - v0))
+    assert [day.book_pnl for day in result.days[1:]] == [0.0, 0.0]
 
 
 def test_delta_hedge_cuts_variance_in_a_black_scholes_world():
@@ -216,7 +240,7 @@ def test_optimizer_policy_runs_and_reduces_risk_on_real_shape():
     policy = OptimizerPolicy(
         "dgv",
         targets,
-        HedgeConfig(risk_aversion=1.0, time_limit_seconds=0.5, require_quote_size=True),
+        HedgeConfig(risk_aversion=1.0, require_quote_size=True),
     )
     naked = run_backtest(ProxyMarket(hist), ShortStrangleBook(), Unhedged())
     hedged = run_backtest(ProxyMarket(hist), ShortStrangleBook(), policy, fail_fast=True)
@@ -234,9 +258,39 @@ def test_band_policy_trades_less_than_daily():
 
 
 def test_long_put_overlay_opens_once_and_rolls():
-    result = run_backtest(rising_market(40), LongPutOverlayBook(), Unhedged())
+    class Recording(LongPutOverlayBook):
+        def trades(self, day, holdings):
+            done = super().trades(day, holdings)
+            log.append((day.as_of, tuple(done)))
+            return done
+
+    log = []
+    result = run_backtest(rising_market(40), Recording(), Unhedged())
     assert len(result.days) == 39
     assert result.days[0].book_cost > 0.0
+
+    active = [(as_of, trades) for as_of, trades in log if trades]
+    opening = active[0][1]
+    assert sorted(type(t.instrument).__name__ for t in opening) == [
+        "LinearInstrument",
+        "OptionContract",
+    ]
+    # Shares are bought once, whatever else happens.
+    linear = [t for _, trades in log for t in trades if isinstance(t.instrument, LinearInstrument)]
+    assert len(linear) == 1
+
+    # A roll closes the old put with 10 days or less to go, and buys a later one.
+    assert len(active) >= 2
+    held = next(t for t in opening if isinstance(t.instrument, OptionContract))
+    for as_of, trades in active[1:]:
+        closing, buying = trades
+        assert closing.instrument == held.instrument
+        assert closing.quantity == -held.quantity
+        assert calendar_years(as_of, held.instrument.expiry) * 365.0 <= 10.0
+        assert buying.instrument.right is OptionRight.PUT
+        assert buying.instrument.expiry > held.instrument.expiry
+        assert buying.quantity == held.quantity
+        held = buying
 
 
 def test_third_friday_and_expiries():

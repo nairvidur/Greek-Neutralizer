@@ -26,7 +26,7 @@ from greeks_neutralizer.domain import (
     require_finite,
 )
 from greeks_neutralizer.errors import GNError, ValidationError
-from greeks_neutralizer.hedging.diagnostics import DecayStep
+from greeks_neutralizer.hedging.diagnostics import DecayForecast
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -45,8 +45,8 @@ from greeks_neutralizer.market import (
 )
 from greeks_neutralizer.pricing.book import BookValuation
 from greeks_neutralizer.risk.measures import (
-    LadderBucket,
-    LimitBreach,
+    ExpiryLadder,
+    LimitCheck,
     LiquidityEstimate,
     RiskLimit,
     liquidity_adjusted_cost,
@@ -377,8 +377,8 @@ def parse_hedge_request(
 
 def _parse_limit(data: Any) -> RiskLimit:
     d = _require(data, "limit")
-    check_fields(d, "limit", {"metric", "lower", "upper"}, {"underlying"})
-    return RiskLimit(d["metric"], d["lower"], d["upper"], d.get("underlying"))
+    check_fields(d, "limit", {"metric"}, {"lower", "upper", "underlying"})
+    return RiskLimit(d["metric"], d.get("lower"), d.get("upper"), d.get("underlying"))
 
 
 @_typed_errors
@@ -466,24 +466,25 @@ def book_to_json(book: BookValuation) -> dict[str, Any]:
     }
 
 
-def ladder_to_json(buckets: Sequence[LadderBucket]) -> dict[str, Any]:
+def ladder_to_json(ladder: ExpiryLadder) -> dict[str, Any]:
     return {
-        "count": len(buckets),
+        "count": len(ladder.buckets),
         "buckets": [
             {
                 "expiry": bucket.expiry.isoformat(),
                 "n_lines": bucket.n_lines,
                 "exposure": bucket.exposure.as_dict(),
             }
-            for bucket in buckets
+            for bucket in ladder.buckets
         ],
+        "issues": list(ladder.issues),
     }
 
 
-def breaches_to_json(breaches: Sequence[LimitBreach], checked: int) -> dict[str, Any]:
+def limit_check_to_json(check: LimitCheck) -> dict[str, Any]:
     return {
-        "checked": checked,
-        "breached": len(breaches),
+        "checked": check.checked,
+        "breached": len(check.breaches),
         "breaches": [
             {
                 "metric": breach.limit.metric,
@@ -495,8 +496,9 @@ def breaches_to_json(breaches: Sequence[LimitBreach], checked: int) -> dict[str,
                 "utilization": breach.utilization if math.isfinite(breach.utilization) else None,
                 "utilization_unbounded": math.isinf(breach.utilization),
             }
-            for breach in breaches
+            for breach in check.breaches
         ],
+        "issues": list(check.issues),
     }
 
 
@@ -509,14 +511,15 @@ def liquidity_to_json(estimates: Sequence[LiquidityEstimate]) -> dict[str, Any]:
     }
 
 
-def decay_to_json(steps: Sequence[DecayStep], underlying: str) -> dict[str, Any]:
+def decay_to_json(forecast: DecayForecast, underlying: str) -> dict[str, Any]:
     return {
         "underlying": underlying,
-        "count": len(steps),
+        "count": len(forecast.steps),
         "steps": [
             {"days_forward": step.days_forward, "exposure": step.exposure.as_dict()}
-            for step in steps
+            for step in forecast.steps
         ],
+        "issues": list(forecast.issues),
     }
 
 

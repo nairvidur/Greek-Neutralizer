@@ -403,21 +403,33 @@ class DecayStep:
     exposure: Exposure
 
 
+@dataclass(frozen=True, slots=True)
+class DecayForecast:
+    steps: tuple[DecayStep, ...]
+    issues: tuple[str, ...]
+
+
 def hedge_decay_forecast(
     positions: Sequence[Position],
     snapshot: MarketSnapshot,
     underlying: str,
     days: Sequence[float] = (1.0, 2.0, 5.0, 10.0, 21.0),
-) -> tuple[DecayStep, ...]:
+) -> DecayForecast:
     """How the book's exposures drift as time passes with spot and vol unchanged.
 
     An underlying the market does not have raises, since a misspelled one would read as no exposure.
+    `issues` holds today's valuation issues, then those first appearing at a step, marked with it.
     """
     require_symbol("underlying", underlying)
     snapshot.market(underlying)
+    today = value_book(positions, snapshot).issues
+    issues = list(today)
+    seen = set(today)
     steps: list[DecayStep] = []
     for day in days:
         rolled = shock_snapshot(snapshot, Scenario(f"+{day:g}d", days_forward=day))
         book = value_book(positions, rolled)
         steps.append(DecayStep(day, book.by_underlying.get(underlying, Exposure())))
-    return tuple(steps)
+        issues.extend(f"{issue} (at +{day:g}d)" for issue in book.issues if issue not in seen)
+        seen.update(book.issues)
+    return DecayForecast(tuple(steps), tuple(issues))

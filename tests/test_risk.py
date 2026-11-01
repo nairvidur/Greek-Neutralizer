@@ -189,7 +189,7 @@ def test_ladder_groups_by_expiry_sorted():
         Position(euro("put", 100, 30), 1),
         Position(euro("call", 105, 30), 2),
     ]
-    ladder = expiry_ladder(book, flat_snapshot())
+    ladder = expiry_ladder(book, flat_snapshot()).buckets
     assert [b.n_lines for b in ladder] == [2, 1]
     assert ladder[0].expiry < ladder[1].expiry
 
@@ -227,11 +227,11 @@ def test_limits_report_only_breaches_and_reject_unknown_metrics():
     book = [Position(euro("call", 100, 30), 10)]
     snap = flat_snapshot()
     delta = value_book(book, snap).by_underlying["XYZ"].delta_shares
-    breached = check_limits(book, snap, [RiskLimit("delta_shares", -1.0, 1.0, "XYZ")])
+    breached = check_limits(book, snap, [RiskLimit("delta_shares", -1.0, 1.0, "XYZ")]).breaches
     assert len(breached) == 1
     assert_allclose(breached[0].value, delta)
     assert breached[0].utilization > 1.0
-    assert check_limits(book, snap, [RiskLimit("delta_shares", -1e9, 1e9)]) == ()
+    assert check_limits(book, snap, [RiskLimit("delta_shares", -1e9, 1e9)]).breaches == ()
     with pytest.raises(ValidationError, match="unknown risk metric"):
         check_limits(book, snap, [RiskLimit("delta", -1.0, 1.0)])
 
@@ -282,7 +282,7 @@ def test_portfolio_margin_style_uses_scan_and_floor():
     far_long = [Position(euro("put", 40, 7), 10)]
     floor = portfolio_margin_style_estimate(far_long, snap)
     assert_allclose(floor.requirement, 10 * 37.5)
-    assert "estimate" not in floor.method or floor.is_estimate
+    assert floor.is_estimate
 
 
 def test_curve_change_flows_through_snapshot_replace():

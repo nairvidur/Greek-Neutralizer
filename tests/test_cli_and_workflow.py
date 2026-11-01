@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.examples import example_book, example_market, example_request
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.hedging.problem import ProposalStatus
+from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, book_scenario_pnl
 from greeks_neutralizer.schema import (
     parse_book,
     parse_hedge_request,
@@ -137,8 +139,25 @@ def test_stress_is_sorted_worst_first(files):
         "historical",
     )
     assert result.returncode == 0
-    assert "worst:" in result.stdout
-    assert "1987" in result.stdout
+    lines = result.stdout.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("pnl[")) + 1
+    rows = list(csv.reader(line.strip() for line in lines[start:] if line.startswith("  ")))
+    shown = [(row[0], float(row[1])) for row in rows]
+    # The oracle for "worst" is the smallest P&L from a separate repricing call, not the CLI's sort.
+    book = parse_book(json.loads(files["book"].read_text()))
+    market = parse_market(json.loads(files["market"].read_text()))
+    truth = {
+        s.name: float(v)
+        for s, v in zip(
+            HISTORICAL_STRESSES, book_scenario_pnl(book, market, HISTORICAL_STRESSES), strict=True
+        )
+    }
+    assert len(shown) == len(truth)
+    assert [pnl for _, pnl in shown] == sorted(pnl for _, pnl in shown)
+    worst = min(truth, key=lambda name: truth[name])
+    assert shown[0][0] == worst
+    assert shown[0][1] == pytest.approx(truth[worst], rel=1e-8)
+    assert f'name: "{worst}"' in result.stdout
 
 
 def test_stress_rejects_unknown_set(files):
@@ -321,7 +340,9 @@ def test_rejection_needs_a_reason_and_is_idempotent(store, proposal):
 def test_repeat_approval_is_a_no_op(store, proposal):
     record = store.submit(proposal, "alice")
     first = store.approve(record.id, "bob")
+    records = store.audit.path.read_text().splitlines()
     assert store.approve(record.id, "bob") == first
+    assert store.audit.path.read_text().splitlines() == records
 
 
 def test_unstable_proposal_cannot_be_approved(store, proposal):

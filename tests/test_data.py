@@ -241,9 +241,27 @@ def test_cboe_detects_missing_sizes():
 
 @pytest.mark.parametrize(
     "bad",
-    [{}, {"timestamp": "x"}, {"data": {}, "timestamp": 1}, _payload([]), _payload(["nope"])],
-    ids=["empty", "no-data", "bad-ts", "no-options", "bad-rows"],
+    [
+        {},
+        ["not an object"],
+        {"timestamp": "x"},
+        {"data": {}, "timestamp": 1},
+        {"data": {}, "timestamp": "not a time"},
+        {"data": {"options": 5}, "timestamp": "2026-01-05T15:00:00"},
+        _payload([]),
+        _payload(["nope"]),
+    ],
+    ids=[
+        "empty",
+        "not-an-object",
+        "no-data",
+        "bad-ts",
+        "unreadable-ts",
+        "options-not-a-list",
+        "no-options",
+        "bad-rows",
+    ],
 )
 def test_cboe_malformed_payload_fails_closed(bad):
-    with pytest.raises((MarketDataError, ValueError, AttributeError)):
+    with pytest.raises(MarketDataError):
         parse_cboe_delayed(bad)

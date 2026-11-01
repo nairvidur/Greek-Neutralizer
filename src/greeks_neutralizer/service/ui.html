@@ -242,7 +242,7 @@ function renderProposal(p, reviewing = "") {
     p.legs.map((l) => [
       `<td><span class="badge ${l.side === "BUY" ? "ok" : "warn"}">${l.side}</span></td>`,
       `<td>${fmt(Math.abs(l.quantity))}</td>`, `<td style="text-align:left">${escapeHtml(l.description)}</td>`,
-      `<td>${fmt(l.expected_price, 2)}</td>`, `<td>${signed(l.premium)}</td>`,
+      `<td>${fmt(l.expected_price, 2)}</td>`, `<td>${fmt(l.premium)}</td>`,
       `<td>${fmt(l.transaction_cost, 2)}</td>`, `<td class="wrap">${escapeHtml(l.rationale)}</td>`]),
     [2, 6]
   ) : `<div class="empty">${escapeHtml(NO_LEGS_TEXT[p.status] || "0 legs: no trade improves the objective.")}</div>`;

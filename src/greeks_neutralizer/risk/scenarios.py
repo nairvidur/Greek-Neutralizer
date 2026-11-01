@@ -47,6 +47,9 @@ _MIN_VOL = 1e-3
 _MAX_TERM_FACTOR = 3.0
 
 
+MAX_DAYS_FORWARD = 36_525.0  # 100 years. Past this a date overflows, and no listed product lives.
+
+
 @dataclass(frozen=True, slots=True)
 class Scenario:
     """A market move. spot_shock is relative (-0.05 is -5%); vol_shock is in vol (0.05 is +5)."""
@@ -73,6 +76,10 @@ class Scenario:
             raise ValidationError(f"scenario {self.name}: spot_shock must exceed -100%")
         if self.days_forward < 0.0:
             raise ValidationError(f"scenario {self.name}: days_forward must be non-negative")
+        if self.days_forward > MAX_DAYS_FORWARD:
+            raise ValidationError(
+                f"scenario {self.name}: days_forward must be at most {MAX_DAYS_FORWARD:g}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +140,12 @@ class ShockedSurface:
 
 
 def _horizon(as_of: datetime, scenario: Scenario) -> datetime:
-    return as_of + timedelta(days=scenario.days_forward)
+    try:
+        return as_of + timedelta(days=scenario.days_forward)
+    except OverflowError as exc:
+        raise ValidationError(
+            f"scenario {scenario.name}: {scenario.days_forward:g} days past {as_of} is not a date"
+        ) from exc
 
 
 def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) -> UnderlyingMarket:

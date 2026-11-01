@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from greeks_neutralizer.cli import main
-from greeks_neutralizer.domain import OptionContract, OptionRight, Position
+from greeks_neutralizer.domain import (
+    LinearInstrument,
+    LinearKind,
+    OptionContract,
+    OptionRight,
+    Position,
+)
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.examples import (
     DEFAULT_AS_OF,
@@ -23,6 +30,7 @@ from greeks_neutralizer.examples import (
     example_market,
     example_request,
 )
+from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.risk.measures import RiskLimit, expiry_ladder, liquidity_adjusted_cost
 from greeks_neutralizer.schema import parse_hedge_request
@@ -182,7 +190,7 @@ def test_the_ladder_buckets_on_the_new_york_date():
     expiry = datetime(2026, 3, 21, 5, 0, tzinfo=tokyo)
     contract = OptionContract("XYZ", OptionRight.CALL, 100.0, expiry)
     ladder = expiry_ladder([Position(contract, 1)], flat_snapshot())
-    assert [bucket.expiry.isoformat() for bucket in ladder] == ["2026-03-20"]
+    assert [bucket.expiry.isoformat() for bucket in ladder.buckets] == ["2026-03-20"]
 
 
 def test_the_ladder_endpoint_totals_each_date(tmp_path):
@@ -214,7 +222,7 @@ def test_limit_breaches_are_reported_with_hand_worked_values(tmp_path):
     assert dollars["value"] == pytest.approx(10_000.0)
     assert dollars["utilization"] == pytest.approx(2.0)
     assert not dollars["utilization_unbounded"]
-    # Any exposure against a limit of zero has no finite utilization, and says so.
+    # A band of zero width has no finite utilization, and says so.
     assert shares["utilization"] is None
     assert shares["utilization_unbounded"]
 
@@ -430,3 +438,266 @@ def test_an_unusable_list_limit_is_refused(tmp_path, limit):
 def test_an_empty_list_is_definite(tmp_path):
     body = _client(tmp_path).get("/v1/proposals", headers=ALICE).json()
     assert body == {"total": 0, "count": 0, "proposals": []}
+
+
+# --- Reports carry the book's valuation issues ----------------------------------------------------
+
+
+def _expired_book():
+    option = {**example_book()[0]["instrument"]}
+    option["expiry"] = (DEFAULT_AS_OF - timedelta(days=1)).isoformat()
+    return [{"instrument": option, "quantity": -1}]
+
+
+@pytest.mark.parametrize(
+    ("path", "extra"),
+    [
+        ("/v1/ladder", {}),
+        ("/v1/limits", {"limits": [{"metric": "delta_shares", "lower": -1.0, "upper": 1.0}]}),
+        ("/v1/decay", {"underlying": "XYZ", "days": [1]}),
+        ("/v1/decay", {"underlying": "XYZ", "days": []}),
+        ("/v1/stress", {}),
+        ("/v1/grid", {}),
+    ],
+)
+def test_an_expired_option_is_named_on_every_report(tmp_path, path, extra):
+    payload = {"book": _expired_book(), "market": example_market(), **extra}
+    response = _client(tmp_path).post(path, headers=ALICE, json=payload)
+    assert response.status_code == 200, response.text
+    assert any(issue.startswith("EXPIRED") for issue in response.json()["issues"])
+
+
+def test_a_clean_book_has_no_issues_on_its_reports(tmp_path):
+    payload = {"book": example_book(), "market": example_market()}
+    client = _client(tmp_path)
+    assert client.post("/v1/ladder", headers=ALICE, json=payload).json()["issues"] == []
+    assert client.post("/v1/stress", headers=ALICE, json=payload).json()["issues"] == []
+
+
+def test_decay_says_at_which_step_an_option_expires(tmp_path):
+    expiring = {**example_book()[0]["instrument"]}
+    expiring["expiry"] = (DEFAULT_AS_OF + timedelta(days=5)).isoformat()
+    payload = {
+        "book": [{"instrument": expiring, "quantity": 1}],
+        "market": example_market(),
+        "underlying": "XYZ",
+        "days": [1, 10, 20],
+    }
+    issues = _client(tmp_path).post("/v1/decay", headers=ALICE, json=payload).json()["issues"]
+    assert len(issues) == 1
+    assert issues[0].startswith("EXPIRED")
+    assert issues[0].endswith("(at +10d)")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["ladder"],
+        ["stress"],
+        ["decay", "--underlying", "XYZ", "--days", "1"],
+        ["limits", "--limits", "LIMITS"],
+    ],
+    ids=["ladder", "stress", "decay", "limits"],
+)
+def test_an_expired_option_is_named_by_every_cli_report(tmp_path, capfd, command):
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps(_expired_book()))
+    market = tmp_path / "market.json"
+    market.write_text(json.dumps(example_market()))
+    limits = tmp_path / "limits.json"
+    limits.write_text(json.dumps([{"metric": "delta_shares", "lower": -1.0, "upper": 1.0}]))
+    args = [str(limits) if part == "LIMITS" else part for part in command]
+    assert main([args[0], "--book", str(book), "--market", str(market), *args[1:]]) == 0
+    assert "EXPIRED" in capfd.readouterr().out
+
+
+# --- Days forward has a stated maximum ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("days", [36_526.0, 1e9, 1e12, 1e308])
+def test_a_huge_horizon_is_a_422_on_decay(tmp_path, days):
+    payload = {
+        "book": HUNDRED_SHARES,
+        "market": example_market(),
+        "underlying": "XYZ",
+        "days": [days],
+    }
+    response = _client(tmp_path).post("/v1/decay", headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "days_forward" in response.json()["error"]
+
+
+@pytest.mark.parametrize("path", ["/v1/hedge", "/v1/frontier", "/v1/proposals"])
+def test_a_huge_horizon_is_a_422_in_a_request_scenario(tmp_path, path):
+    request = example_request()
+    request["scenarios"] = [{"name": "far", "days_forward": 1e9}]
+    response = _client(tmp_path).post(path, headers=ALICE, json=request)
+    assert response.status_code == 422
+    assert "days_forward" in response.json()["error"]
+
+
+@pytest.mark.parametrize("days", ["1e7", "1e12"])
+def test_a_huge_horizon_is_a_structured_cli_error(tmp_path, capfd, days):
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps(HUNDRED_SHARES))
+    market = tmp_path / "market.json"
+    market.write_text(json.dumps(example_market()))
+    args = ["decay", "--book", str(book), "--market", str(market), "--underlying", "XYZ"]
+    assert main([*args, "--days", days]) == 1
+    out = capfd.readouterr().out
+    assert out.startswith("error:")
+    assert "days_forward" in out
+
+
+@pytest.mark.parametrize(
+    ("path", "extra"), [("/v1/stress", {}), ("/v1/decay", {"underlying": "XYZ"})]
+)
+def test_a_horizon_past_the_last_date_is_a_422(tmp_path, path, extra):
+    market = {**example_market(), "as_of": "9999-12-30T15:00:00+00:00"}
+    payload = {"book": HUNDRED_SHARES, "market": market, **extra}
+    response = _client(tmp_path).post(path, headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "not a date" in response.json()["error"]
+
+
+def test_the_longest_horizon_allowed_still_values_a_book():
+    # 100 years, and a stated maximum rather than the point where dates happen to overflow.
+    book = [Position(LinearInstrument("XYZ", "XYZ"), 100)]
+    forecast = hedge_decay_forecast(book, flat_snapshot(), "XYZ", (36_525.0,))
+    assert forecast.steps[0].exposure.delta_shares == 100.0
+
+
+# --- Limit utilization ----------------------------------------------------------------------------
+
+
+def _breach(tmp_path, quantity, **bounds):
+    payload = {
+        "book": [{"instrument": STOCK, "quantity": quantity}],
+        "market": example_market(),
+        "limits": [{"metric": "delta_shares", **bounds}],
+    }
+    response = _client(tmp_path).post("/v1/limits", headers=ALICE, json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()["breaches"]
+
+
+def test_utilization_is_distance_from_the_centre_over_the_half_width(tmp_path):
+    # Centre 550, half-width 450, and 1 share is 549 from the centre: 549 / 450 = 1.22.
+    assert _breach(tmp_path, 1, lower=100.0, upper=1000.0)[0]["utilization"] == pytest.approx(1.22)
+    # Centre 500, half-width 500, and -100 shares is 600 from the centre: 600 / 500 = 1.2.
+    assert _breach(tmp_path, -100, lower=0.0, upper=1000.0)[0]["utilization"] == pytest.approx(1.2)
+
+
+def test_a_worse_breach_of_a_floor_has_a_higher_utilization(tmp_path):
+    near = _breach(tmp_path, 90, lower=100.0, upper=1000.0)[0]["utilization"]
+    far = _breach(tmp_path, 1, lower=100.0, upper=1000.0)[0]["utilization"]
+    assert 1.0 < near < far
+
+
+def test_utilization_does_not_overflow_on_very_large_bounds():
+    limit = RiskLimit("delta_shares", 1e308, 1.7e308)
+    assert limit.utilization(1.0) == pytest.approx(1.35 / 0.35)
+    assert RiskLimit("delta_shares", -1.7e308, 1.7e308).utilization(0.0) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("quantity", "bounds"),
+    [
+        (50, {"lower": 100.0}),
+        (150, {"upper": 100.0}),
+        (150, {"lower": 100.0, "upper": 100.0}),
+    ],
+    ids=["floor-only", "cap-only", "zero-width"],
+)
+def test_no_ratio_exists_for_an_open_or_zero_width_band(tmp_path, quantity, bounds):
+    breach = _breach(tmp_path, quantity, **bounds)[0]
+    assert breach["utilization"] is None
+    assert breach["utilization_unbounded"] is True
+    assert breach["value"] == pytest.approx(float(quantity))
+
+
+def test_a_one_sided_limit_that_holds_is_not_a_breach(tmp_path):
+    assert _breach(tmp_path, 150, lower=100.0) == []
+    assert _breach(tmp_path, 50, upper=100.0) == []
+
+
+@pytest.mark.parametrize("raw", ["Infinity", "-Infinity", "NaN"])
+def test_a_bound_that_is_not_finite_is_refused(tmp_path, raw):
+    limit = f'{{"metric": "delta_shares", "lower": {raw}}}'
+    body = json.dumps({"book": HUNDRED_SHARES, "market": example_market(), "limits": []})
+    response = _client(tmp_path).post(
+        "/v1/limits",
+        headers={**ALICE, "Content-Type": "application/json"},
+        content=body.replace('"limits": []', f'"limits": [{limit}]'),
+    )
+    assert response.status_code == 422
+    assert "lower" in response.json()["error"]
+
+
+def test_a_limit_with_no_bound_is_refused(tmp_path):
+    payload = {
+        "book": HUNDRED_SHARES,
+        "market": example_market(),
+        "limits": [{"metric": "delta_shares"}],
+    }
+    response = _client(tmp_path).post("/v1/limits", headers=ALICE, json=payload)
+    assert response.status_code == 422
+    assert "bound" in response.json()["error"]
+
+
+# --- Dated futures in the ladder ------------------------------------------------------------------
+
+
+def _future(days):
+    return {
+        "type": "linear",
+        "symbol": "XYF",
+        "underlying": "XYZ",
+        "kind": "future",
+        "multiplier": 50.0,
+        "expiry": (DEFAULT_AS_OF + timedelta(days=days)).isoformat(),
+    }
+
+
+def test_a_book_of_futures_has_a_ladder(tmp_path):
+    payload = {"book": [{"instrument": _future(20), "quantity": 5}], "market": example_market()}
+    body = _client(tmp_path).post("/v1/ladder", headers=ALICE, json=payload).json()
+    assert body["count"] == 1
+    assert body["buckets"][0]["expiry"] == "2026-01-25"
+    # dF/dS is exp(rT) with no dividends: 5 x 50 x 100 x exp(0.05 x 20/365).
+    expected = 5 * 50 * 100.0 * math.exp(0.05 * 20 / 365)
+    exposure = body["buckets"][0]["exposure"]
+    assert exposure["delta_dollars"] == pytest.approx(expected, rel=1e-6)
+
+
+def test_a_date_shows_options_and_futures_net(tmp_path):
+    futures_only = {"instrument": _future(30), "quantity": 2}
+    payload = {"book": [*example_book(), futures_only], "market": example_market()}
+    client = _client(tmp_path)
+    body = client.post("/v1/ladder", headers=ALICE, json=payload).json()
+    assert body["count"] == 1
+    assert body["buckets"][0]["n_lines"] == 3
+    # The two lines of options plus the future are the whole book, valued independently.
+    whole = client.post("/v1/value", headers=ALICE, json=payload).json()
+    expected = whole["by_underlying"]["XYZ"]["delta_dollars"]
+    assert body["buckets"][0]["exposure"]["delta_dollars"] == pytest.approx(expected)
+
+
+def test_a_future_is_bucketed_on_its_new_york_date():
+    # 16:00 in New York on 20 March is 05:00 on 21 March at +09:00.
+    expiry = datetime(2026, 3, 21, 5, 0, tzinfo=timezone(timedelta(hours=9)))
+    future = LinearInstrument("XYF", "XYZ", LinearKind.FUTURE, multiplier=50.0, expiry=expiry)
+    ladder = expiry_ladder([Position(future, 1)], flat_snapshot())
+    assert [bucket.expiry.isoformat() for bucket in ladder.buckets] == ["2026-03-20"]
+
+
+def test_shares_alone_have_no_ladder(tmp_path, capfd):
+    payload = {"book": HUNDRED_SHARES, "market": example_market()}
+    body = _client(tmp_path).post("/v1/ladder", headers=ALICE, json=payload).json()
+    assert (body["count"], body["buckets"]) == (0, [])
+    book = tmp_path / "book.json"
+    book.write_text(json.dumps(HUNDRED_SHARES))
+    market = tmp_path / "market.json"
+    market.write_text(json.dumps(example_market()))
+    assert main(["ladder", "--book", str(book), "--market", str(market)]) == 0
+    assert "0 dated lines" in capfd.readouterr().out

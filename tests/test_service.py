@@ -62,13 +62,27 @@ def test_mutating_endpoints_require_auth(client, path):
 
 
 def test_health_and_ui_are_open_but_hold_no_data(client):
+    created = client.post("/v1/proposals", headers=ALICE, json=quick_request())
+    assert created.status_code == 201
+    record = created.json()
+    secrets = (
+        record["id"],
+        "alice",
+        "a-token",
+        record["proposal"]["manifest"]["market_fingerprint"],
+    )
     health = client.get("/healthz")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
-    assert client.get("/metrics").status_code == 200
+    assert set(health.json()) == {"status", "version", "audit_records", "detail"}
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
     page = client.get("/")
     assert page.status_code == 200
     assert "Greeks Neutralizer" in page.text
+    for response in (health, metrics, page):
+        for secret in secrets:
+            assert secret not in response.text
 
 
 def test_identity_comes_from_the_token(client):

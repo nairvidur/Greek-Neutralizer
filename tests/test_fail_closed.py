@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -410,22 +411,50 @@ def test_deleting_the_log_is_detected(tmp_path):
     assert not verify_audit_log(path).ok
 
 
-def test_approve_cannot_overwrite_a_concurrent_rejection(store):
+@pytest.mark.parametrize("first", ["approve", "reject"])
+def test_approve_and_reject_cannot_both_win_a_race(store, monkeypatch, first):
     record = store.submit(_verified_proposal(), "alice")
-    original = store.clock
+    # Each thread reaching its audit write waits here for the other. If the store's lock does its
+    # job the other can never arrive, so the wait times out and exactly one decision is written.
+    # Without the lock both pass the state check, meet here, and both are written.
+    meeting = threading.Barrier(2, timeout=1.0)
+    real_append = store.audit.append
+    in_write = threading.Event()
 
-    def reject_during_approve():
-        # The window between approve's state check and its transition.
-        store.clock = original
-        store.reject(record.id, "carol", "no")
-        return original()
+    def append(event, *args, **kwargs):
+        if event in {"approved", "rejected"}:
+            in_write.set()
+            with contextlib.suppress(threading.BrokenBarrierError):
+                meeting.wait()
+        return real_append(event, *args, **kwargs)
 
-    store.clock = reject_during_approve
-    with contextlib.suppress(WorkflowError):
-        store.approve(record.id, "bob")
-    assert store.get(record.id).state.value in {"approved", "rejected"}
+    monkeypatch.setattr(store.audit, "append", append)
+    actions = {
+        "approve": lambda: store.approve(record.id, "bob"),
+        "reject": lambda: store.reject(record.id, "carol", "no"),
+    }
+    refused = []
+
+    def decide(name):
+        try:
+            actions[name]()
+        except WorkflowError as exc:
+            refused.append(str(exc))
+
+    second = "reject" if first == "approve" else "approve"
+    threads = [threading.Thread(target=decide, args=(name,)) for name in (first, second)]
+    threads[0].start()
+    assert in_write.wait(30.0)
+    threads[1].start()
+    for thread in threads:
+        thread.join(timeout=30.0)
+        assert not thread.is_alive()
+
     events = [json.loads(line)["event"] for line in store.audit.path.read_text().splitlines()]
-    assert not ("rejected" in events and "approved" in events)
+    decisions = [event for event in events if event in {"approved", "rejected"}]
+    assert len(decisions) == 1
+    assert len(refused) == 1
+    assert store.get(record.id).state.value == decisions[0]
 
 
 # --- Tickets --------------------------------------------------------------------------------------

@@ -61,7 +61,7 @@ def _parser() -> tuple[_Parser, dict[str, _Parser]]:
     frontier = commands.add_parser("frontier", help="Cost against risk, with baselines")
     frontier.add_argument("--request", type=Path, required=True)
 
-    ladder = commands.add_parser("ladder", help="Option exposures by expiry date")
+    ladder = commands.add_parser("ladder", help="Option and future exposures by expiry date")
     ladder.add_argument("--book", type=Path, required=True)
     ladder.add_argument("--market", type=Path, required=True)
     ladder.add_argument("--full", action="store_true", help="Include every exposure")
@@ -158,6 +158,7 @@ def _cmd_value(args: argparse.Namespace) -> dict[str, Any]:
 
 def _cmd_stress(args: argparse.Namespace) -> dict[str, Any]:
     from greeks_neutralizer.errors import ValidationError
+    from greeks_neutralizer.pricing.book import value_book
     from greeks_neutralizer.risk.scenarios import book_scenario_pnl
     from greeks_neutralizer.schema import SCENARIO_SETS, parse_book, parse_market
 
@@ -167,12 +168,14 @@ def _cmd_stress(args: argparse.Namespace) -> dict[str, Any]:
         )
     book = parse_book(_load(args.book))
     scenarios = SCENARIO_SETS[args.scenario_set]
-    pnl = book_scenario_pnl(book, parse_market(_load(args.market)), scenarios)
+    snapshot = parse_market(_load(args.market))
+    pnl = book_scenario_pnl(book, snapshot, scenarios)
     rows = sorted(zip(scenarios, pnl, strict=True), key=lambda item: float(item[1]))
     return {
         "scenarios": len(rows),
         "worst": {"name": rows[0][0].name, "pnl": float(rows[0][1])},
         "pnl": [{"scenario": s.name, "pnl": float(v)} for s, v in rows],
+        "issues": list(value_book(book, snapshot).issues),
     }
 
 
@@ -278,7 +281,7 @@ def _cmd_ladder(args: argparse.Namespace) -> dict[str, Any]:
     book = parse_book(_load(args.book))
     data = ladder_to_json(expiry_ladder(book, parse_market(_load(args.market))))
     if not data["count"]:
-        return {"ladder": "0 option lines: nothing to ladder"}
+        return {"ladder": "0 dated lines: nothing to ladder", "issues": data["issues"]}
     out: dict[str, Any] = {
         "expiries": data["count"],
         "ladder": [
@@ -289,6 +292,7 @@ def _cmd_ladder(args: argparse.Namespace) -> dict[str, Any]:
             }
             for bucket in data["buckets"]
         ],
+        "issues": data["issues"],
     }
     if not args.full:
         out["help"] = ["Run with --full for every exposure"]
@@ -298,7 +302,7 @@ def _cmd_ladder(args: argparse.Namespace) -> dict[str, Any]:
 def _cmd_limits(args: argparse.Namespace) -> dict[str, Any]:
     from greeks_neutralizer.risk.measures import check_limits
     from greeks_neutralizer.schema import (
-        breaches_to_json,
+        limit_check_to_json,
         parse_book,
         parse_limits,
         parse_market,
@@ -306,12 +310,12 @@ def _cmd_limits(args: argparse.Namespace) -> dict[str, Any]:
 
     limits = parse_limits(_load(args.limits))
     book = parse_book(_load(args.book))
-    breaches = check_limits(book, parse_market(_load(args.market)), limits)
-    data = breaches_to_json(breaches, len(limits))
+    data = limit_check_to_json(check_limits(book, parse_market(_load(args.market)), limits))
     return {
         "checked": data["checked"],
         "breached": data["breached"],
         "breaches": data["breaches"] or f"0 of {data['checked']} limits breached",
+        "issues": data["issues"],
     }
 
 
@@ -331,16 +335,17 @@ def _cmd_decay(args: argparse.Namespace) -> dict[str, Any]:
     book = parse_book(_load(args.book))
     snapshot = parse_market(_load(args.market))
     if args.days is None:
-        steps = hedge_decay_forecast(book, snapshot, args.underlying)
+        forecast = hedge_decay_forecast(book, snapshot, args.underlying)
     else:
-        steps = hedge_decay_forecast(book, snapshot, args.underlying, args.days)
-    data = decay_to_json(steps, args.underlying)
+        forecast = hedge_decay_forecast(book, snapshot, args.underlying, args.days)
+    data = decay_to_json(forecast, args.underlying)
     out: dict[str, Any] = {
         "underlying": data["underlying"],
         "decay": [
             {"days": step["days_forward"], **_exposure_row(step["exposure"], args.full)}
             for step in data["steps"]
         ],
+        "issues": data["issues"],
     }
     if not args.full:
         out["help"] = ["Run with --full for every exposure"]

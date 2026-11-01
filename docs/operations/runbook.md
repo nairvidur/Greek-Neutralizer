@@ -54,12 +54,20 @@ These reprice from the request and store nothing:
 
 | Endpoint | CLI | Reports |
 |---|---|---|
-| `POST /v1/ladder` | `gn ladder` | Option exposures by New York expiry date |
+| `POST /v1/ladder` | `gn ladder` | Option and dated future exposures by New York expiry date, so each date shows the net position. Shares are left out, because they do not expire |
 | `POST /v1/limits` | `gn limits` | Which limits in the request the book breaches, of how many checked |
 | `POST /v1/liquidity` | `gn liquidity` | Half-spread cost and days to exit, from a spread and daily volume the caller supplies |
 | `POST /v1/decay` | `gn decay` | One underlying's exposures as time passes, with spot and vol unchanged |
 
 A breach is a line in a response, and nothing acts on it: see `docs/limitations.md`.
+Each of these except liquidity, and `/v1/stress`, `/v1/grid`, and `gn stress`, carries the book's valuation `issues`, so read them as you would on a proposal: an expired option shows no risk here, and is still there to settle.
+`gn decay` and `/v1/decay` also list an issue first appearing at a step, marked with that step, such as `(at +10d)`.
+
+A limit needs a `lower`, an `upper`, or both, and a bound must be finite.
+`utilization` on a breach is the distance from the band's centre over its half-width, so above 1.0 means breached: 10,000 against [-5000, 5000] is 2.0, and 1 against [100, 1000] is about 1.22.
+A zero-width band, or one with a side left out, has no such ratio, so `utilization` is null and `utilization_unbounded` is true.
+
+A scenario, or a decay step, can look forward at most 36,525 days.
 
 ## Listing proposals
 

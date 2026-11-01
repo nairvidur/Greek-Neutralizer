@@ -10,8 +10,15 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from numpy.testing import assert_allclose
+from scipy.optimize import milp as real_milp
 
-from greeks_neutralizer.domain import LinearInstrument, LinearKind, Position, Quote
+from greeks_neutralizer.domain import (
+    LinearInstrument,
+    LinearKind,
+    OptionContract,
+    Position,
+    Quote,
+)
 from greeks_neutralizer.errors import HedgeInfeasibleError, ValidationError
 from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import (
@@ -94,7 +101,17 @@ def test_high_risk_aversion_reduces_all_greeks_within_one_contract():
 
 def test_quantities_are_integer_lots():
     proposal = solve()
-    assert all(isinstance(leg.quantity, int) for leg in proposal.legs)
+    assert proposal.legs
+    assert all(type(leg.quantity) is int and leg.quantity != 0 for leg in proposal.legs)
+    tens = (
+        CANDIDATES[0],
+        *(replace(c, lot_size=10, max_buy=100, max_sell=100) for c in CANDIDATES[1:]),
+    )
+    options = [
+        leg for leg in solve(candidates=tens).legs if isinstance(leg.instrument, OptionContract)
+    ]
+    assert options
+    assert all(leg.quantity % 10 == 0 for leg in options)
 
 
 def test_more_than_three_instruments_and_linear_hedge_are_supported():
@@ -102,7 +119,7 @@ def test_more_than_three_instruments_and_linear_hedge_are_supported():
     proposal = solve()
     instruments = {leg.instrument.key for leg in proposal.legs}
     assert STOCK.key in instruments
-    assert len(CANDIDATES) > 3
+    assert len(instruments) > 3
 
 
 def test_premium_is_accounted_for_and_separate_from_cost():
@@ -132,7 +149,7 @@ def test_low_risk_aversion_trades_less_than_high():
     cheap = solve(config=HedgeConfig(risk_aversion=0.001))
     keen = solve(config=HedgeConfig(risk_aversion=10.0))
     # Only cost is monotone. Gross lots is not: an option can replace many cheap shares.
-    assert cheap.transaction_cost <= keen.transaction_cost
+    assert cheap.transaction_cost < keen.transaction_cost
 
 
 def test_flat_book_needs_no_trade():
@@ -259,8 +276,17 @@ def test_answer_does_not_depend_on_how_much_time_the_machine_had():
     assert roomy.objective == tight.objective
 
 
-def test_hitting_the_wall_clock_backstop_is_reported():
-    p = solve_hedge(_hard_option_problem(0.01), flat_snapshot())
+def test_hitting_the_wall_clock_backstop_is_reported(monkeypatch):
+    # HiGHS stopping at the clock with an incumbent, which is status 1 from scipy, on demand.
+    def at_the_clock(*args, **kwargs):
+        result = real_milp(*args, **kwargs)
+        result.status = 1
+        result.message = "Time limit reached. (HiGHS Status 13: model_status is Time limit reached)"
+        return result
+
+    monkeypatch.setattr(optimizer, "milp", at_the_clock)
+    p = solve_hedge(_hard_option_problem(30.0), flat_snapshot())
+    assert p.legs
     assert any("SOLVER_TIME_LIMIT" in issue for issue in p.issues)
 
 
@@ -335,7 +361,7 @@ def test_max_legs_is_respected():
 def test_ticket_cost_reduces_legs():
     free = solve(config=HedgeConfig(risk_aversion=0.5))
     dear = solve(config=HedgeConfig(risk_aversion=0.5, ticket_cost=200.0))
-    assert len(dear.legs) <= len(free.legs)
+    assert len(dear.legs) < len(free.legs)
 
 
 def test_max_buy_and_sell_caps_are_respected():
@@ -604,11 +630,12 @@ def test_frontier_contains_baselines_and_cost_rises_with_aversion():
 
 def test_no_trade_band_formula_and_monotonicity():
     band = whalley_wilmott_band(
-        gamma_shares=100.0, spot=100.0, proportional_cost=0.001, risk_aversion=1e-4
+        gamma_shares=20.0, spot=50.0, proportional_cost=0.001, risk_aversion=1e-4
     )
-    expected = np.cbrt(1.5 * 0.001 * 100.0 * 100.0**2 / 1e-4)
-    assert_allclose(band.half_width_shares, expected)
-    wider = whalley_wilmott_band(100.0, 100.0, 0.002, 1e-4)
+    # Whalley-Wilmott by hand: (3/2 * 0.001 * 50 * 20^2 / 1e-4)^(1/3) = 300,000^(1/3). Spot and
+    # gamma differ, so that swapping their powers, which gives 750,000^(1/3), fails.
+    assert_allclose(band.half_width_shares, 66.9432950, rtol=1e-7)
+    wider = whalley_wilmott_band(20.0, 50.0, 0.002, 1e-4)
     assert wider.half_width_shares > band.half_width_shares
     assert band.should_rebalance(band.half_width_shares + 1.0)
     assert not band.should_rebalance(band.half_width_shares - 1.0)
@@ -616,7 +643,7 @@ def test_no_trade_band_formula_and_monotonicity():
 
 def test_decay_forecast_gamma_grows_atm_into_expiry():
     book = (Position(euro("call", 100, 10), 10),)
-    steps = hedge_decay_forecast(book, flat_snapshot(), "XYZ", days=(1.0, 5.0, 9.0))
+    steps = hedge_decay_forecast(book, flat_snapshot(), "XYZ", days=(1.0, 5.0, 9.0)).steps
     assert steps[0].exposure.gamma_shares < steps[-1].exposure.gamma_shares
 
 

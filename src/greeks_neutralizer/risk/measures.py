@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -154,22 +155,30 @@ class LadderBucket:
     exposure: Exposure
 
 
-def expiry_ladder(
-    positions: Sequence[Position], snapshot: MarketSnapshot
-) -> tuple[LadderBucket, ...]:
+@dataclass(frozen=True, slots=True)
+class ExpiryLadder:
+    buckets: tuple[LadderBucket, ...]
+    issues: tuple[str, ...]
+
+
+def expiry_ladder(positions: Sequence[Position], snapshot: MarketSnapshot) -> ExpiryLadder:
     """Exposures by New York expiry date, shortest first, the same date tickets and descriptions
-    use. Linear lines are excluded: they do not expire."""
+    use. Options and dated futures are both in, so that each date shows the net position. Shares
+    are left out, because they do not expire."""
     book = value_book(positions, snapshot)
     buckets: dict[date, tuple[int, Exposure]] = {}
     for line in book.lines:
-        instrument = line.position.instrument
-        if not isinstance(instrument, OptionContract):
+        expiry = line.position.instrument.expiry
+        if expiry is None:
             continue
-        day = instrument.expiry.astimezone(NEW_YORK).date()
+        day = expiry.astimezone(NEW_YORK).date()
         count, total = buckets.get(day, (0, Exposure()))
         buckets[day] = (count + 1, total + line.exposure)
-    return tuple(
-        LadderBucket(day, count, exposure) for day, (count, exposure) in sorted(buckets.items())
+    return ExpiryLadder(
+        tuple(
+            LadderBucket(day, count, exposure) for day, (count, exposure) in sorted(buckets.items())
+        ),
+        book.issues,
     )
 
 
@@ -256,23 +265,49 @@ def expiry_risks(
 
 @dataclass(frozen=True, slots=True)
 class RiskLimit:
-    """Bounds on one exposure for one underlying, or on book totals when underlying is None."""
+    """Bounds on one exposure for one underlying, or on book totals when underlying is None.
+
+    A side left as None has no bound. At least one side is required, and a bound must be finite.
+    """
 
     metric: str
-    lower: float
-    upper: float
+    lower: float | None = None
+    upper: float | None = None
     underlying: str | None = None
 
     def __post_init__(self) -> None:
         valid = Exposure().as_dict()
         if not isinstance(self.metric, str) or self.metric not in valid:
             raise ValidationError(f"unknown risk metric {self.metric!r}; valid: {sorted(valid)}")
-        require_finite(f"limit on {self.metric}: lower", self.lower)
-        require_finite(f"limit on {self.metric}: upper", self.upper)
+        if self.lower is None and self.upper is None:
+            raise ValidationError(f"limit on {self.metric}: give a lower bound, an upper, or both")
+        if self.lower is not None:
+            require_finite(f"limit on {self.metric}: lower", self.lower)
+        if self.upper is not None:
+            require_finite(f"limit on {self.metric}: upper", self.upper)
         if self.underlying is not None:
             require_symbol("underlying", self.underlying)
-        if self.lower > self.upper:
+        if self.lower is not None and self.upper is not None and self.lower > self.upper:
             raise ValidationError(f"limit on {self.metric}: lower exceeds upper")
+
+    def contains(self, value: float) -> bool:
+        """Whether `value` is inside the bounds. A value that is not a number is not."""
+        return (self.lower is None or value >= self.lower) and (
+            self.upper is None or value <= self.upper
+        )
+
+    def utilization(self, value: float) -> float:
+        """Distance from the band's centre over its half-width, so above 1.0 is outside the band.
+
+        Infinite where that ratio does not exist: a band of zero width, or one with a side open.
+        Halved before combining, so that very large bounds cannot overflow.
+        """
+        if self.lower is None or self.upper is None:
+            return math.inf
+        half_width = self.upper / 2.0 - self.lower / 2.0
+        if half_width == 0.0:
+            return math.inf
+        return abs(value - (self.upper / 2.0 + self.lower / 2.0)) / half_width
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,9 +317,16 @@ class LimitBreach:
     utilization: float
 
 
+@dataclass(frozen=True, slots=True)
+class LimitCheck:
+    checked: int
+    breaches: tuple[LimitBreach, ...]
+    issues: tuple[str, ...]
+
+
 def check_limits(
     positions: Sequence[Position], snapshot: MarketSnapshot, limits: Sequence[RiskLimit]
-) -> tuple[LimitBreach, ...]:
+) -> LimitCheck:
     """Breached limits. This only reports: it does not store, escalate, or block anything.
 
     An underlying the market does not have raises, since a misspelled one would read as no exposure
@@ -301,11 +343,9 @@ def check_limits(
             snapshot.market(limit.underlying)
             exposure = book.by_underlying.get(limit.underlying, Exposure())
             value = float(getattr(exposure, limit.metric))
-        if not limit.lower <= value <= limit.upper:
-            bound = limit.upper if value > limit.upper else limit.lower
-            utilization = abs(value / bound) if bound != 0.0 else float("inf")
-            breaches.append(LimitBreach(limit, float(value), utilization))
-    return tuple(breaches)
+        if not limit.contains(value):
+            breaches.append(LimitBreach(limit, value, limit.utilization(value)))
+    return LimitCheck(len(limits), tuple(breaches), book.issues)
 
 
 @dataclass(frozen=True, slots=True)

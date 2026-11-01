@@ -158,11 +158,8 @@ def test_integer_answers_that_keep_missing_the_band_are_not_called_infeasible(mo
 @pytest.fixture
 def live_port(tmp_path):
     app = create_app({"a": "alice"}, tmp_path / "audit.jsonl", 1000)
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, http="h11", log_level="critical")
+        uvicorn.Config(app, host="127.0.0.1", port=0, http="h11", log_level="critical")
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -170,12 +167,12 @@ def live_port(tmp_path):
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.01)
     assert server.started
-    yield port
+    yield server.servers[0].sockets[0].getsockname()[1]
     server.should_exit = True
     thread.join(timeout=10.0)
 
 
-def _raw_post(port, headers, body):
+def _raw_post(port, headers, body=b""):
     head = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
     request = (
         f"POST /v1/value HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer a\r\n"
@@ -187,22 +184,19 @@ def _raw_post(port, headers, body):
     return int(status_line.split()[1])
 
 
-def _chunked(size):
-    payload = b"x" * size
-    return f"{size:x}\r\n".encode() + payload + b"\r\n0\r\n\r\n"
-
-
 @pytest.mark.parametrize(
-    ("headers", "body", "expected"),
+    ("headers", "expected"),
     [
-        ({"Content-Length": "1", "Transfer-Encoding": "chunked"}, _chunked(50_000), 411),
-        ({"Transfer-Encoding": "chunked"}, _chunked(50_000), 411),
-        ({"Content-Length": "50000"}, b"x" * 50_000, 413),
+        ({"Content-Length": "1", "Transfer-Encoding": "chunked"}, 411),
+        ({"Transfer-Encoding": "chunked"}, 411),
+        ({"Content-Length": "50000"}, 413),
     ],
     ids=["both-headers", "chunked-alone", "oversized-length"],
 )
-def test_a_body_past_the_limit_never_reaches_the_app(live_port, headers, body, expected):
-    assert _raw_post(live_port, headers, body) == expected
+def test_a_body_past_the_limit_never_reaches_the_app(live_port, headers, expected):
+    # The refusal comes from the headers alone, with no body sent. A request let through would wait
+    # for its body until the socket timed out, and sending none means no reset can eat the answer.
+    assert _raw_post(live_port, headers) == expected
 
 
 def test_a_small_declared_body_still_reaches_the_app(live_port):
