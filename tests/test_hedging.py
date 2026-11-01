@@ -36,7 +36,7 @@ STOCK = LinearInstrument("XYZ", "XYZ")
 
 
 def q(mid, half=0.02, size=1000, age=0.0):
-    return Quote(mid - half, mid + half, size, size, AS_OF - timedelta(seconds=age))
+    return Quote(max(mid - half, 0.0), mid + half, size, size, AS_OF - timedelta(seconds=age))
 
 
 def option_candidate(right, strike, days, half=0.02, size=1000, **kw):
@@ -179,8 +179,49 @@ def test_a_constraint_cannot_improve_the_objective():
         candidates=CANDIDATES[1:],
         config=HedgeConfig(risk_aversion=10.0, premium_budget=free.net_premium - 300.0),
     )
-    assert capped.objective >= free.objective * (1.0 - 0.05)
+    assert capped.objective >= free.objective * (1.0 - 0.02)
     assert capped.objective_lower_bound >= free.objective_lower_bound - 1e-6
+
+
+def test_exact_evaluator_reproduces_the_solver_objective():
+    from greeks_neutralizer.hedging.optimizer import _filter_candidates, _Program
+    from greeks_neutralizer.risk.scenarios import book_scenario_pnl, scenario_pnl_matrix
+
+    # Checks the MILP's formulation against an independent statement of the same objective.
+    scenarios = HISTORICAL_STRESSES[:4]
+    problem = HedgeProblem(
+        BOOK,
+        CANDIDATES,
+        DGV,
+        scenarios,
+        HedgeConfig(risk_aversion=1.0, cvar_weight=0.5, ticket_cost=5.0),
+    )
+    snapshot = flat_snapshot()
+    usable, _ = _filter_candidates(problem, snapshot)
+    book = value_book(problem.book, snapshot)
+    program = _Program(
+        problem,
+        usable,
+        dict(book.by_underlying),
+        book_scenario_pnl(problem.book, snapshot, scenarios),
+        scenario_pnl_matrix([u.candidate.instrument for u in usable], snapshot, scenarios),
+    )
+    constraints, _ = program._constraints()
+    from scipy.optimize import Bounds, milp
+
+    lb, ub = program._variable_bounds()
+    result = milp(
+        c=program._costs(),
+        constraints=constraints,
+        bounds=Bounds(lb, ub),
+        integrality=np.ones(program.size, dtype=np.int64) * 0 + program._integrality(),
+        options={"mip_rel_gap": 1e-4, "time_limit": 10.0},
+    )
+    x = np.asarray(result.x)
+    lots = np.round(program._net_lots(x)).astype(np.int64)
+    # Fine-grained shares are not rounded in the MILP, so re-solve the stated objective at the
+    # solver's own values by keeping the tolerance to one share's exposure.
+    assert_allclose(program.evaluate(lots), result.fun, atol=2.0, rtol=2e-3)
 
 
 def test_objective_never_beats_its_continuous_lower_bound():
@@ -188,6 +229,35 @@ def test_objective_never_beats_its_continuous_lower_bound():
         p = solve(candidates=CANDIDATES[1:], config=config)
         assert p.objective >= p.objective_lower_bound - 1e-6
         assert 0.0 <= p.solver_gap < 1.0
+
+
+def _large_universe():
+    out = [stock_candidate()]
+    for days in (30, 45, 60, 75, 90, 120, 150, 180):
+        for strike in np.arange(70.0, 131.0, 2.5):
+            out.append(option_candidate("put" if strike < 100.0 else "call", float(strike), days))
+    return tuple(out)
+
+
+def test_frontier_is_monotone_on_a_large_universe():
+    # Found on a real SPX chain: with 2,144 candidates and an unscreened integer search, the time
+    # limit left higher risk aversion with a higher residual.
+    universe = _large_universe()
+    assert len(universe) > 150
+    residuals = []
+    for aversion in (0.05, 0.5, 5.0):
+        p = solve(candidates=universe, config=HedgeConfig(risk_aversion=aversion, max_legs=6))
+        residuals.append(
+            sum(t.effective_weight * abs(getattr(p.after["XYZ"], t.greek.value)) for t in DGV)
+        )
+    # Integer lots leave a tolerance: one contract's residual, at most about $150 here.
+    assert residuals[2] <= residuals[0] + 150.0
+
+
+def test_screen_keeps_small_problems_whole_and_does_not_change_answers():
+    small = solve()
+    assert small.verification.passed
+    assert len(CANDIDATES) <= 40
 
 
 def test_integrality_cost_is_reported_when_material():

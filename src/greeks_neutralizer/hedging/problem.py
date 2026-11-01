@@ -114,7 +114,7 @@ class HedgeConfig:
     ticket_cost: float = 0.0
     premium_budget: float | None = None
     mip_gap: float = 5e-3
-    time_limit_seconds: float = 5.0
+    time_limit_seconds: float = 1.0
     max_quote_age: timedelta = timedelta(seconds=30)
     require_quote_size: bool = True
     allow_extrapolated_vol: bool = False

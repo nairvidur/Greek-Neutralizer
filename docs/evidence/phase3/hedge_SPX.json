@@ -1,0 +1,196 @@
+{
+  "symbol": "SPX",
+  "as_of": "2026-10-30T16:14:59-04:00",
+  "spot": 7590.087193422525,
+  "book": [
+    "SPX 2026-12-04 7260P x -50",
+    "SPX 2026-12-04 7975C x -50"
+  ],
+  "n_candidates": 2144,
+  "n_excluded": 32,
+  "status": "within_gap",
+  "seconds_to_solve_with_stability": 35.07550262500081,
+  "legs": [
+    "Sell 15 SPX (spot): delta_dollars -113,851; cost 7.50",
+    "Buy 6 SPX 2026-11-20 7550P: delta_dollars -1,915,341, gamma_1pct +449,650, vega_1pt +4,267; cost 244.20",
+    "Buy 36 SPX 2026-11-30 7800C: delta_dollars +7,107,902, gamma_1pct +2,377,807, vega_1pt +25,814; cost 1,105.20",
+    "Buy 3 SPX 2027-01-15 7475P: delta_dollars -845,983, gamma_1pct +112,047, vega_1pt +3,944; cost 137.10",
+    "Buy 7 SPX 2027-01-15 7750P: delta_dollars -3,032,289, gamma_1pct +316,088, vega_1pt +9,539; cost 354.90",
+    "Buy 10 SPX 2027-01-15 7850P: delta_dollars -4,958,234, gamma_1pct +444,813, vega_1pt +12,791; cost 507.00"
+  ],
+  "transaction_cost": 2355.900000000003,
+  "net_premium": 629513.692098662,
+  "objective": 2393.4698811205385,
+  "objective_lower_bound": 2336.5132820336407,
+  "residuals": [
+    {
+      "underlying": "SPX",
+      "greek": "delta_dollars",
+      "before": 3756893.516670906,
+      "after": -902.3397482177243,
+      "lower": null,
+      "upper": null
+    },
+    {
+      "underlying": "SPX",
+      "greek": "gamma_1pct",
+      "before": -3699228.006350003,
+      "after": 1176.455378991086,
+      "lower": null,
+      "upper": null
+    },
+    {
+      "underlying": "SPX",
+      "greek": "vega_1pt",
+      "before": -56360.30914940237,
+      "after": -5.449826476746239,
+      "lower": null,
+      "upper": null
+    }
+  ],
+  "verification_passed": true,
+  "quantlib_check": {
+    "value": {
+      "ours": 274754.9861404523,
+      "quantlib": 274754.986140448,
+      "difference": 4.307366907596588e-09
+    },
+    "delta_shares": {
+      "ours": -0.11888397658970007,
+      "quantlib": -0.11888397658924532,
+      "difference": -4.547473508864641e-13
+    },
+    "gamma_shares": {
+      "ours": 0.002042123155202802,
+      "quantlib": 0.0020421231552003594,
+      "difference": 2.4424906541753444e-15
+    },
+    "vega_1pt": {
+      "ours": -5.449826476748058,
+      "quantlib": -5.449826476728049,
+      "difference": -2.000888343900442e-11
+    }
+  },
+  "stability": {
+    "condition_number": 9.686075623538136,
+    "lot_change_ratio": 0.0,
+    "is_stable": true,
+    "notes": []
+  },
+  "worst_stress_before": -6812550.657353642,
+  "worst_stress_after": -2783955.219406293,
+  "stress": {
+    "1987-10-19 Black Monday": {
+      "before": -6812550.657353642,
+      "after": -2783955.219406293
+    },
+    "2008-09-29 TARP rejection": {
+      "before": -1931615.9943434843,
+      "after": -583369.030999715
+    },
+    "2008-10-15 post-rally selloff": {
+      "before": -2080308.1747388989,
+      "after": -653110.80210838
+    },
+    "2015-08-24 flash crash open": {
+      "before": -1088038.8878914642,
+      "after": -296580.2025425201
+    },
+    "2018-02-05 Volmageddon": {
+      "before": -1585326.1864424262,
+      "after": -481642.85502515244
+    },
+    "2020-03-16 COVID limit-down": {
+      "before": -3243730.1481652646,
+      "after": -1165977.6519674703
+    },
+    "2024-08-05 yen carry unwind": {
+      "before": -1151779.769129845,
+      "after": -320203.46571538644
+    },
+    "gap up 5% vol down 3": {
+      "before": -171212.26498018074,
+      "after": 7343.367665252037
+    },
+    "melt up 10% vol up 5": {
+      "before": -1853978.9007553943,
+      "after": -399426.43725960096
+    },
+    "vol crush 5 pts flat spot": {
+      "before": 212691.0160386602,
+      "after": -4566.223477012187
+    },
+    "skew steepens": {
+      "before": -6136.353613888639,
+      "after": -16098.052433313525
+    },
+    "skew flattens": {
+      "before": 5305.194274233725,
+      "after": 15334.456921559873
+    },
+    "term inversion": {
+      "before": -455076.59736882173,
+      "after": -105992.45494699251
+    },
+    "one week of decay": {
+      "before": 89723.34421544729,
+      "after": 28337.580362022753
+    }
+  },
+  "taylor_error_after_worst": 4943649.556774597,
+  "frontier": [
+    {
+      "label": "do nothing",
+      "transaction_cost": 0.0,
+      "n_legs": 0,
+      "penalized_residual": 205777.97356076384,
+      "worst_scenario_pnl": -6812550.657353642
+    },
+    {
+      "label": "delta only",
+      "transaction_cost": 247.5,
+      "n_legs": 1,
+      "penalized_residual": 168211.03483478722,
+      "worst_scenario_pnl": -6043473.687349315
+    },
+    {
+      "label": "risk aversion 0.05",
+      "transaction_cost": 2344.400000000004,
+      "n_legs": 6,
+      "penalized_residual": 85.77759924557438,
+      "worst_scenario_pnl": -2331371.8026861167
+    },
+    {
+      "label": "risk aversion 0.2",
+      "transaction_cost": 2348.4000000000037,
+      "n_legs": 6,
+      "penalized_residual": 57.52827812706586,
+      "worst_scenario_pnl": -2333322.661675105
+    },
+    {
+      "label": "risk aversion 1",
+      "transaction_cost": 2355.900000000003,
+      "n_legs": 6,
+      "penalized_residual": 37.56988112052655,
+      "worst_scenario_pnl": -2783955.219406293
+    },
+    {
+      "label": "risk aversion 5",
+      "transaction_cost": 2395.400000000002,
+      "n_legs": 6,
+      "penalized_residual": 34.57386317045631,
+      "worst_scenario_pnl": -2189232.8130041724
+    }
+  ],
+  "reg_t_estimate_before": 8202629.906773382,
+  "reg_t_estimate_after": 8202629.906773382,
+  "expiry_risks": [],
+  "issues": [
+    "INTEGRALITY_GAP objective 2,393.47 against a continuous lower bound of 2,336.51: integer lots cost at most 2.4%"
+  ],
+  "manifest": {
+    "code_version": "2.0.0a1",
+    "market_fingerprint": "3e9641e6f5863afb7e8038895b5926320cc6f812a2b91eda69940099f4683a49",
+    "problem_fingerprint": "430791db681c8563b78e8af9e0b0d9032e33216a13518a6690b60381330960c3"
+  }
+}

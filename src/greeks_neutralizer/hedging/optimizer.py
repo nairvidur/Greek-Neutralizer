@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 from scipy import sparse
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from greeks_neutralizer._version import __version__
 from greeks_neutralizer.data.quality import assess_quote, is_usable
@@ -29,6 +29,7 @@ from greeks_neutralizer.domain import LinearInstrument, LinearKind, OptionContra
 from greeks_neutralizer.errors import GNError, HedgeInfeasibleError
 from greeks_neutralizer.hedging.problem import (
     ExcludedCandidate,
+    GreekName,
     GreekTarget,
     HedgeCandidate,
     HedgeConfig,
@@ -46,6 +47,8 @@ from greeks_neutralizer.risk.scenarios import book_scenario_pnl, scenario_pnl_ma
 
 _DEFAULT_MAX_UNITS = 1_000_000
 _MIN_WINDOW_LOTS = 25.0
+_MAX_INTEGER_CANDIDATES = 40
+_POLISH_PASSES = 30
 _WINDOW_FRACTION = 0.5
 _TRADING_DAYS = 252.0
 
@@ -201,6 +204,17 @@ class _Program:
             return 0.0
         return float(getattr(row.exposure, target.greek.value))
 
+    def _row_scale(self, target: GreekTarget) -> float:
+        """Largest exposure on this target's row, so scaled coefficients are at most about 1.
+
+        Delta dollars per contract are around 1e6 next to unit coefficients on the absolute-value
+        columns, which leaves the matrix badly conditioned and made HiGHS report numerical trouble.
+        """
+        largest = abs(self.book_value(target))
+        for row in self.usable:
+            largest = max(largest, abs(self._exposure_column(target, row)))
+        return max(largest, 1.0)
+
     def book_value(self, target: GreekTarget) -> float:
         exposure = self.book_by_underlying.get(target.underlying, Exposure())
         return float(getattr(exposure, target.greek.value))
@@ -219,7 +233,8 @@ class _Program:
             if self.use_binary:
                 c[self.i_used + i] = config.ticket_cost
         for t, target in enumerate(self.targets):
-            penalty = config.risk_aversion * target.effective_weight
+            # The absolute-value columns are in units of the scaled row.
+            penalty = config.risk_aversion * target.effective_weight * self._row_scale(target)
             c[self.i_abs + 2 * t] = penalty
             c[self.i_abs + 2 * t + 1] = penalty
         if self.ns:
@@ -265,10 +280,11 @@ class _Program:
             names.append(name)
 
         for t, target in enumerate(self.targets):
-            base = self.book_value(target)
+            scale = self._row_scale(target)
+            base = self.book_value(target) / scale
             terms: dict[int, float] = {}
             for i, row in enumerate(self.usable):
-                exposure = self._exposure_column(target, row)
+                exposure = self._exposure_column(target, row) / scale
                 if exposure != 0.0:
                     for col, sign in self._net_units(i).items():
                         terms[col] = sign * exposure
@@ -278,8 +294,8 @@ class _Program:
             definition[self.i_abs + 2 * t + 1] = 1.0
             add(definition, -base, -base, f"residual:{target.underlying}:{target.greek.value}")
             if not elastic and (target.lower is not None or target.upper is not None):
-                low = -np.inf if target.lower is None else target.lower - base
-                high = np.inf if target.upper is None else target.upper - base
+                low = -np.inf if target.lower is None else target.lower / scale - base
+                high = np.inf if target.upper is None else target.upper / scale - base
                 add(terms, low, high, f"band:{target.underlying}:{target.greek.value}")
 
         config = self.problem.config
@@ -358,36 +374,220 @@ class _Program:
             ub[4 * i + 3] = min(ub[4 * i + 3], np.ceil(-low))
         return lb, ub
 
+    def evaluate(self, lots: NDArray[np.int64]) -> float:
+        """The exact objective of net `lots` (in units), or infinity if any constraint fails.
+
+        An independent statement of the MILP's objective and constraints in terms of net positions.
+        A test requires it to reproduce the solver's objective, which cross-checks the formulation.
+        """
+        config = self.problem.config
+        total = 0.0
+        premium = 0.0
+        legs = 0
+        for row, quantity in zip(self.usable, lots, strict=True):
+            q = int(quantity)
+            if q == 0:
+                continue
+            lot = row.candidate.lot_size
+            if q % lot != 0:
+                return float("inf")
+            size = abs(q)
+            buying = q > 0
+            cap_lots = row.buy_total_cap if buying else row.sell_total_cap
+            touch_lots = row.buy_touch_cap if buying else row.sell_touch_cap
+            if size > cap_lots * lot:
+                return float("inf")
+            touch_cost = row.buy_cost_touch if buying else row.sell_cost_touch
+            deep_units = max(size - touch_lots * lot, 0)
+            total += size * (touch_cost + config.risk_aversion * row.basis_risk_per_unit_1d)
+            total += deep_units * row.candidate.impact_per_unit
+            premium += q * row.mid_value
+            legs += 1
+        if config.premium_budget is not None and premium > config.premium_budget + 1e-9:
+            return float("inf")
+        if config.max_legs is not None and legs > config.max_legs:
+            return float("inf")
+        if self.use_binary:
+            total += legs * config.ticket_cost
+        for target in self.targets:
+            value = self.book_value(target) + sum(
+                float(q) * self._exposure_column(target, row)
+                for row, q in zip(self.usable, lots, strict=True)
+                if q != 0
+            )
+            if target.lower is not None and value < target.lower - 1e-9:
+                return float("inf")
+            if target.upper is not None and value > target.upper + 1e-9:
+                return float("inf")
+            total += config.risk_aversion * target.effective_weight * abs(value)
+        if self.ns:
+            total += config.cvar_weight * self._cvar(lots)
+        return total
+
+    def _cvar(self, lots: NDArray[np.int64]) -> float:
+        """Rockafellar-Uryasev: the minimum over v, attained at one of the scenario losses."""
+        alpha = self.problem.config.cvar_alpha
+        losses = -(self.book_scenario + self.unit_scenario @ lots.astype(np.float64))
+        best = float("inf")
+        for v in losses:
+            excess = np.maximum(losses - v, 0.0)
+            best = min(best, float(v + excess.sum() / ((1.0 - alpha) * losses.size)))
+        return best
+
+    def _delta_retune(self, lots: NDArray[np.int64]) -> NDArray[np.int64] | None:
+        """These lots with the fine-grained linear hedge moved to flatten delta, if one exists."""
+        for target in self.targets:
+            if target.greek is not GreekName.DELTA:
+                continue
+            for i, row in enumerate(self.usable):
+                instrument = row.candidate.instrument
+                if (
+                    isinstance(instrument, LinearInstrument)
+                    and instrument.multiplier == 1.0
+                    and instrument.underlying == target.underlying
+                ):
+                    unit = self._exposure_column(target, row)
+                    if unit == 0.0:
+                        continue
+                    others = self.book_value(target) + sum(
+                        float(q) * self._exposure_column(target, other)
+                        for j, (other, q) in enumerate(zip(self.usable, lots, strict=True))
+                        if j != i and q != 0
+                    )
+                    tuned = lots.copy()
+                    tuned[i] = round(-others / unit)
+                    return tuned
+        return None
+
+    def polish(
+        self, lots: NDArray[np.int64], allowed: NDArray[np.bool_]
+    ) -> tuple[NDArray[np.int64], float]:
+        """Deterministic local search over single and paired lot moves from a feasible start.
+
+        Lot rounding makes this a lattice problem: the best integer point near the LP solution is
+        generally not what branch and bound reaches inside its time limit. On a 5-instrument option
+        hedge, HiGHS's incumbent at the limit scored 358 against 252 for a more constrained problem,
+        which is impossible at an optimum. Only strict improvements are taken, so this terminates
+        and never leaves a worse answer than the solver's.
+        """
+        current = lots.copy()
+        best = self.evaluate(current)
+        steps = [i for i in range(self.n) if allowed[i]]
+        if not steps or not np.isfinite(best):
+            return current, best
+        for _ in range(_POLISH_PASSES):
+            improved = False
+            held = [i for i in steps if current[i] != 0]
+            for i in steps:
+                unit = self.usable[i].candidate.lot_size
+                for direction in (unit, -unit):
+                    trial = current.copy()
+                    trial[i] += direction
+                    pool = [trial]
+                    for j in held:
+                        if j == i:
+                            continue
+                        other = self.usable[j].candidate.lot_size
+                        for second in (other, -other):
+                            paired = trial.copy()
+                            paired[j] += second
+                            pool.append(paired)
+                    for candidate in pool:
+                        tuned = self._delta_retune(candidate)
+                        for option in (candidate, tuned):
+                            if option is None:
+                                continue
+                            value = self.evaluate(option)
+                            if value < best - 1e-9:
+                                current, best = option, value
+                                improved = True
+            if not improved:
+                break
+        return current, best
+
+    def _relax(self, costs: NDArray[np.float64], constraints: list[LinearConstraint]) -> Any:
+        """Solve the LP relaxation with linprog, which returns the reduced costs used to screen."""
+        lb, ub = self._variable_bounds()
+        bounds = list(zip(lb, ub, strict=True))
+        kwargs: dict[str, Any] = {}
+        if constraints:
+            matrix = sparse.csr_array(constraints[0].A)
+            low = np.asarray(constraints[0].lb, dtype=np.float64)
+            high = np.asarray(constraints[0].ub, dtype=np.float64)
+            equal = low == high
+            upper = ~equal & np.isfinite(high)
+            lower = ~equal & np.isfinite(low)
+            if np.any(equal):
+                kwargs["A_eq"] = matrix[np.flatnonzero(equal)]
+                kwargs["b_eq"] = high[equal]
+            if np.any(upper) or np.any(lower):
+                parts = []
+                rhs = []
+                if np.any(upper):
+                    parts.append(matrix[np.flatnonzero(upper)])
+                    rhs.append(high[upper])
+                if np.any(lower):
+                    parts.append(-matrix[np.flatnonzero(lower)])
+                    rhs.append(-low[lower])
+                kwargs["A_ub"] = sparse.vstack(parts, format="csr")
+                kwargs["b_ub"] = np.concatenate(rhs)
+        return linprog(
+            costs,
+            bounds=bounds,
+            method="highs",
+            options={"time_limit": self.problem.config.time_limit_seconds, "disp": False},
+            **kwargs,
+        )
+
+    def _screen(self, relaxed: Any, lp_lots: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """Candidates the integer search may use: the LP's choices, plus the closest alternatives.
+
+        The reduced cost of a column is how far its cost is from being worth using. Small values
+        mark instruments that are nearly as good as those chosen, which is what integer rounding
+        needs. Thousands of candidates with large reduced costs only slow the search: with 2,144 on
+        a real SPX chain, the time limit left a frontier that was not monotone in risk aversion.
+        """
+        keep = np.abs(lp_lots) > 1e-9
+        if self.n <= _MAX_INTEGER_CANDIDATES:
+            return np.ones(self.n, dtype=bool)
+        marginals = getattr(getattr(relaxed, "lower", None), "marginals", None)
+        if marginals is None:
+            return np.ones(self.n, dtype=bool)
+        reduced = np.asarray(marginals, dtype=np.float64)[: 4 * self.n].reshape(self.n, 4)
+        tradable = self._variable_bounds()[1][: 4 * self.n].reshape(self.n, 4) > 0.0
+        score = np.where(tradable, reduced, np.inf).min(axis=1)
+        order = np.argsort(score, kind="stable")
+        keep[order[:_MAX_INTEGER_CANDIDATES]] = True
+        return keep
+
     def solve(self) -> _Solution:
-        """LP relaxation, then an integer search in a window around it.
+        """LP relaxation, then an integer search over screened candidates near its solution.
 
         The relaxation is fast, gives the true lower bound on the objective, and decides
-        feasibility. If the window excludes every integer solution, the search widens once.
-        `gap` is measured against the LP bound, so it reports what integrality cost in total and
-        cannot be fooled by an incumbent returned at the time limit.
+        feasibility. If the window excludes every integer solution, the search widens once and then
+        drops the screen. `gap` is measured against the LP bound, so it reports what integrality
+        cost in total and cannot be fooled by an incumbent returned at the time limit.
         """
         config = self.problem.config
         costs = self._costs()
         constraints, _ = self._constraints()
-        lb, ub = self._variable_bounds()
-        relaxed = milp(
-            c=costs,
-            constraints=constraints,
-            bounds=Bounds(lb, ub),
-            options={"time_limit": config.time_limit_seconds, "disp": False},
-        )
+        relaxed = self._relax(costs, constraints)
+        if relaxed.status == 2 or (relaxed.x is None and relaxed.status == 2):
+            raise HedgeInfeasibleError(
+                "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
+            )
         if relaxed.x is None:
-            if relaxed.status == 2:
-                raise HedgeInfeasibleError(
-                    "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
-                )
             raise GNError(f"hedge solver failed on the relaxation: {relaxed.message}")
         lower_bound = float(relaxed.fun)
         lp_lots = self._net_lots(np.asarray(relaxed.x, dtype=np.float64))
+        screened = self._screen(relaxed, lp_lots)
 
         result = None
-        for widen in (1.0, 4.0):
+        for widen, use_screen in ((1.0, True), (4.0, True), (4.0, False)):
             win_lb, win_ub = self._windowed_bounds(lp_lots, widen)
+            if use_screen:
+                for dropped in np.flatnonzero(~screened):
+                    win_ub[4 * int(dropped) : 4 * int(dropped) + 4] = 0.0
             result = milp(
                 c=costs,
                 constraints=constraints,
@@ -414,7 +614,10 @@ class _Program:
             buys = round(x[4 * i]) + round(x[4 * i + 1])
             sells = round(x[4 * i + 2]) + round(x[4 * i + 3])
             lots[i] = (buys - sells) * lot
-        objective = float(result.fun)
+        lots, objective = self.polish(lots, screened)
+        if not np.isfinite(objective):
+            # Rounding the continuous linear hedge left a band, so fall back on the solver's value.
+            objective = float(result.fun)
         gap = (objective - lower_bound) / max(abs(objective), 1.0)
         return _Solution(lots, objective, max(gap, 0.0), lower_bound)
 
