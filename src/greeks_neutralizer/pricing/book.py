@@ -84,6 +84,7 @@ class OptionValuation:
     american_tree: NDArray[np.bool_]
     exercise_premium: FloatArray
     smile_slope: FloatArray  # d sigma / d k at the contract's strike
+    extrapolated: NDArray[np.bool_]  # vol read beyond the surface's quoted strikes
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +165,7 @@ class _Buffers:
     tree: NDArray[np.bool_]
     premium: FloatArray
     slope: FloatArray
+    extrapolated: NDArray[np.bool_]
 
     @staticmethod
     def zeros(n: int) -> _Buffers:
@@ -179,6 +181,7 @@ class _Buffers:
             tree=np.zeros(n, dtype=bool),
             premium=col(),
             slope=col(),
+            extrapolated=np.zeros(n, dtype=bool),
         )
 
 
@@ -199,6 +202,7 @@ def value_options(
         american_tree=out.tree,
         exercise_premium=out.premium,
         smile_slope=out.slope,
+        extrapolated=out.extrapolated,
     )
 
 
@@ -225,8 +229,12 @@ def _value_group(
     k = np.log(strikes / forwards)
     vol = np.zeros_like(T)
     slope = np.zeros_like(T)
+    extrapolated = np.zeros_like(live)
     if np.any(live):
         vol[live], slope[live] = _smile(market, k[live], tau[live])
+        check = getattr(market.surface, "extrapolating", None)
+        if check is not None:
+            extrapolated[live] = check(k[live], tau[live])
 
     # The escrowed spot and carry yield reproduce each contract's forward in the closed form.
     pv_div = np.array([market.pv_dividends(as_of, c.expiry) for c in group], dtype=np.float64)
@@ -262,6 +270,7 @@ def _value_group(
     out.tree[idx] = needs_tree
     out.premium[idx] = premium
     out.slope[idx] = slope
+    out.extrapolated[idx] = extrapolated
 
 
 def _american_batch(
@@ -332,6 +341,11 @@ def value_book(positions: Sequence[Position], snapshot: MarketSnapshot) -> BookV
                 issues.append(
                     f"EXPIRED {instrument.describe()} qty {position.quantity}: "
                     "carried at intrinsic with zero risk; settle or remove it"
+                )
+            if valuation.extrapolated[option_row]:
+                issues.append(
+                    f"EXTRAPOLATED_VOL {instrument.describe()}: strike is beyond the surface's "
+                    "quotes, where no-arbitrage is unverified"
                 )
             underlying = instrument.underlying
             option_row += 1

@@ -103,8 +103,10 @@ def _tree_values(b: AmericanBatch, steps: int) -> tuple[FloatArray, FloatArray]:
     carry = b.r - b.q
     d1 = (np.log(s_star / b.strike) + carry * b.T) / s + 0.5 * s
     d2 = d1 - s
-    p = _peizer_pratt(d2, n)
-    p_prime = _peizer_pratt(d1, n)
+    # Clamped: at very low vol the inversion reaches 0 or 1 in floating point, leaving the tree
+    # undefined, and such an option has no exercise premium to resolve anyway.
+    p = np.clip(_peizer_pratt(d2, n), 1e-12, 1.0 - 1e-12)
+    p_prime = np.clip(_peizer_pratt(d1, n), 1e-12, 1.0 - 1e-12)
     growth = np.exp(carry * dt)
     u = growth * p_prime / p
     d = (growth - p * u) / (1.0 - p)
@@ -134,7 +136,7 @@ def _tree_values(b: AmericanBatch, steps: int) -> tuple[FloatArray, FloatArray]:
     return american[:, 0], european[:, 0]
 
 
-def _european_closed_form(b: AmericanBatch) -> FloatArray:
+def european_closed_form(b: AmericanBatch) -> FloatArray:
     s_star = b.spot - _pv_divs_at(b, np.zeros_like(b.T))
     forward = s_star * np.exp((b.r - b.q) * b.T)
     df = np.exp(-b.r * b.T)
@@ -189,7 +191,7 @@ def american_price(batch: AmericanBatch, steps: int = DEFAULT_STEPS) -> FloatArr
         premium[plain] = np.maximum(2.0 * fine - coarse, 0.0)
     if with_div.size:
         premium[with_div] = _exercise_premium(_select(batch, with_div), 2 * steps - 1)
-    value = _european_closed_form(batch) + premium
+    value = european_closed_form(batch) + premium
     immediate = batch.omega * (batch.spot - batch.strike)
     return np.asarray(np.maximum(value, immediate), dtype=np.float64)
 
@@ -273,7 +275,7 @@ def american_greeks(batch: AmericanBatch, steps: int = DEFAULT_GREEK_STEPS) -> A
         phi=(q_up - q_dn) / (2.0 * dr),
         vanna=(up_v - dn_v - up_w + dn_w) / (4.0 * h * dv),
         volga=(v_up - 2.0 * p0 + v_dn) / (dv * dv),
-        exercise_premium=np.maximum(reported_price - _european_closed_form(b), 0.0),
+        exercise_premium=np.maximum(reported_price - european_closed_form(b), 0.0),
     )
 
 
