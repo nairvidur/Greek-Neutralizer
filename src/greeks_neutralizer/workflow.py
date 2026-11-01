@@ -325,6 +325,9 @@ class ProposalStore:
                     "problem_fingerprint": proposal.manifest.problem_fingerprint,
                     "market_fingerprint": proposal.manifest.market_fingerprint,
                     "code_version": proposal.manifest.code_version,
+                    "scipy_version": proposal.manifest.scipy_version,
+                    "numpy_version": proposal.manifest.numpy_version,
+                    "run_stability": proposal.manifest.run_stability,
                 },
                 now,
             )

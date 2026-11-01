@@ -21,3 +21,8 @@ class HedgeInfeasibleError(GNError):
     def __init__(self, message: str, binding: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.binding = binding
+
+
+class SearchLimitError(GNError):
+    """The search stopped at a limit or solver failure with no hedge. This proves nothing either
+    way about whether a hedge exists, so it must never be reported as infeasibility."""

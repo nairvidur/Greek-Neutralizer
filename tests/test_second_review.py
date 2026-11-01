@@ -169,10 +169,12 @@ def test_csv_ticket_cells_cannot_start_a_formula(proposal):
     assert all(row.split(",")[3][0] not in "=+-@" for row in rows)
 
 
-@pytest.mark.parametrize("kind", [LinearKind.SPOT, LinearKind.PROXY])
-def test_only_a_future_has_an_expiry(kind):
-    with pytest.raises(ValidationError):
-        LinearInstrument("XYZ", "XYZ", kind, basis_vol=0.1, expiry=EXPIRY)
+@pytest.mark.parametrize(
+    ("kind", "basis_vol"), [(LinearKind.SPOT, 0.0), (LinearKind.PROXY, 0.1)], ids=["spot", "proxy"]
+)
+def test_only_a_future_has_an_expiry(kind, basis_vol):
+    with pytest.raises(ValidationError, match="only a future has an expiry"):
+        LinearInstrument("XYZ", "XYZ", kind, basis_vol=basis_vol, expiry=EXPIRY)
 
 
 # --- Currency -----------------------------------------------------------------------------------

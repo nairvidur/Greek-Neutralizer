@@ -23,6 +23,10 @@ uv run python scripts/hedge_real_chain.py vendor_data/_SPX.json --rate 0.0482
 | Replay | Byte-identical across two runs, one with all 12 cores saturated by other work |
 | Candidates excluded | 40, with reasons |
 
+The trade movement and regret figures predate a later fix: stability re-solves now use only the candidates the base solve accepted, where they used to include the excluded quotes.
+They need regenerating from the vendor chain, which is not committed, so expect them to change.
+The manifest in `hedge_SPX.json` also predates the library versions and the stability flag.
+
 QuantLib is a separate implementation, so the agreement checks arithmetic independently.
 It uses the same vols and rates, so it cannot detect a wrong input or assumption.
 

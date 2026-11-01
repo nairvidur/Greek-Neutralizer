@@ -261,6 +261,9 @@ def main() -> None:
             "code_version": proposal.manifest.code_version,
             "market_fingerprint": proposal.manifest.market_fingerprint,
             "problem_fingerprint": proposal.manifest.problem_fingerprint,
+            "scipy_version": proposal.manifest.scipy_version,
+            "numpy_version": proposal.manifest.numpy_version,
+            "run_stability": proposal.manifest.run_stability,
         },
     }
     assert book_scenario_pnl(book, snapshot, scenarios).size == len(scenarios)

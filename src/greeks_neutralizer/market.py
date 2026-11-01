@@ -134,6 +134,10 @@ class UnderlyingMarket:
         if not isinstance(self.surface, VolSurface):
             raise ValidationError("surface must implement VolSurface")
 
+    def dividends_paid(self, after: datetime, until: datetime) -> float:
+        """Cash per share, undiscounted, from dividends with after < ex_date <= until."""
+        return sum(d.amount for d in self.dividends if after < d.ex_date <= until)
+
     def pv_dividends(self, as_of: datetime, until: datetime) -> float:
         """PV at as_of of cash dividends with as_of < ex_date <= until."""
         pv = 0.0

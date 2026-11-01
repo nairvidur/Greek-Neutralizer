@@ -12,6 +12,7 @@ This is alpha software, and **it has not been used to hedge real money.**
 ## Models
 
 - Parametric surfaces fit inside the quoted market for only about 35% of SPX and 29% of SPY contracts. Costs therefore come from live quotes, never the surface.
+- Scenario P&L over a horizon includes discrete dividends, but not financing or continuous carry income.
 - Volatility dynamics are simple: scenarios shift a surface, and do not simulate it. Heston, local vol, SLV, and Monte Carlo are **not implemented**, so path-dependent and barrier options are not supported.
 - Dividends use the escrowed model. Desks using a spot-vol model will see differences of about 0.12 on the tested calls.
 - American veta, speed, zomma, and color are European approximations. They are not in position exposures.
@@ -53,6 +54,7 @@ FRTB sensitivity export is not implemented.
 ## Numerics and performance
 
 - The search stops at a fixed node count, so a hard problem gets a good answer rather than a proven best one. The gap to the LP bound is reported.
-- Replay is exact only without a `SOLVER_TIME_LIMIT` issue, and on the same library versions, since HiGHS and SciPy updates can change results.
+- Replay is exact only without a `SOLVER_TIME_LIMIT` issue, and on the same library versions, which the manifest records, since HiGHS and SciPy updates can change results. Other architectures are unverified.
+- A search that reaches its limit with no hedge returns a `search_limit` error, with no answer about whether a hedge exists.
 - With `max_legs` or a ticket cost, the reported gap is against a weak bound and overstates the true shortfall.
 - Budgets in `docs/evidence/performance/` are provisional targets. Few repeats were run, so `p99` there is not a real tail measurement.

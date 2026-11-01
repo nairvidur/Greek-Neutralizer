@@ -46,5 +46,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv export --locked --no-dev --no-hashes --no-emit-project -o requirements.txt
+      - run: uv export --locked --no-dev --all-extras --no-hashes --no-emit-project -o requirements.txt
       - run: uvx pip-audit -r requirements.txt

@@ -196,6 +196,10 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
         {"spot", "surface"},
         {"rate", "curve", "carry_yield", "dividends"},
     )
+    if ("curve" in d) == ("rate" in d):
+        raise ValidationError(
+            f"market {symbol}: give exactly one of 'rate' or 'curve'; there is no default rate"
+        )
     if "curve" in d:
         curve_data = _require(d["curve"], "curve")
         check_fields(curve_data, "curve", {"times", "zero_rates"})
@@ -203,10 +207,8 @@ def _parse_underlying(symbol: str, data: Any) -> UnderlyingMarket:
             _list_of(curve_data["times"], "times", float),
             _list_of(curve_data["zero_rates"], "zero_rates", float),
         )
-    elif "rate" in d:
-        curve = DiscountCurve.flat(d["rate"])
     else:
-        raise ValidationError(f"market {symbol}: give 'rate' or 'curve'; there is no default rate")
+        curve = DiscountCurve.flat(d["rate"])
 
     def parse_dividend(item: Any) -> CashDividend:
         v = _require(item, "dividend")
@@ -468,5 +470,8 @@ def proposal_to_json(proposal: HedgeProposal) -> dict[str, Any]:
             "problem_fingerprint": proposal.manifest.problem_fingerprint,
             "as_of": proposal.manifest.as_of.isoformat(),
             "solver": proposal.manifest.solver,
+            "scipy_version": proposal.manifest.scipy_version,
+            "numpy_version": proposal.manifest.numpy_version,
+            "run_stability": proposal.manifest.run_stability,
         },
     }

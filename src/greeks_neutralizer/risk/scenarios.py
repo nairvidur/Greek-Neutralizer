@@ -3,6 +3,9 @@
 Vol shocks are specified at a 30-day reference tenor and decay with tenor as (30d / tau)^power,
 since short-dated vol moves more than long-dated vol. Skew shocks tilt the smile linearly in
 log-moneyness.
+
+A horizon that crosses an ex-date drops spot by the dividend and pays it to stock and proxy holders,
+so that a dividend is never reported as decay. Financing and continuous carry income are left out.
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ from numpy.typing import NDArray
 from greeks_neutralizer.domain import (
     ExerciseStyle,
     Instrument,
+    LinearInstrument,
+    LinearKind,
     OptionContract,
     Position,
     require_finite,
@@ -127,12 +132,25 @@ class ShockedSurface:
         }
 
 
+def _horizon(as_of: datetime, scenario: Scenario) -> datetime:
+    return as_of + timedelta(days=scenario.days_forward)
+
+
 def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) -> UnderlyingMarket:
+    horizon = _horizon(as_of, scenario)
+    spot = market.spot * (1.0 + scenario.spot_shock) - market.dividends_paid(as_of, horizon)
+    if spot <= 0.0:
+        raise MarketDataError(
+            f"{market.symbol}: dividends going ex by {horizon} exceed spot under {scenario.name}"
+        )
+    # The surface reads time from the horizon, by when any dividend inside it has gone ex.
     dividends = tuple(
-        (t, d.amount * float(market.curve.discount(t)))
+        (
+            calendar_years(horizon, d.ex_date),
+            d.amount * float(market.curve.discount(calendar_years(as_of, d.ex_date))),
+        )
         for d in market.dividends
         if d.ex_date > as_of
-        for t in (calendar_years(as_of, d.ex_date),)
     )
     surface = ShockedSurface(
         market.surface,
@@ -144,7 +162,7 @@ def shock_market(market: UnderlyingMarket, scenario: Scenario, as_of: datetime) 
         scenario.spot_shock,
         dividends,
     )
-    return replace(market, spot=market.spot * (1.0 + scenario.spot_shock), surface=surface)
+    return replace(market, spot=spot, surface=surface)
 
 
 def shock_snapshot(
@@ -153,7 +171,7 @@ def shock_snapshot(
     """A new snapshot with the scenario applied to the given underlyings, or all of them."""
     chosen = set(snapshot.underlyings if symbols is None else symbols)
     return MarketSnapshot(
-        snapshot.as_of + timedelta(days=scenario.days_forward),
+        _horizon(snapshot.as_of, scenario),
         {
             sym: shock_market(m, scenario, snapshot.as_of) if sym in chosen else m
             for sym, m in snapshot.underlyings.items()
@@ -167,7 +185,8 @@ def price_instruments(
     """Whole-contract value of one unit of each instrument. Price only, so it is fast.
 
     Futures are marked at the forward: only differences are meaningful, which is how
-    `scenario_pnl_matrix` uses them.
+    `scenario_pnl_matrix` uses them. An instrument that expired before this snapshot settles at the
+    spot of its expiry, which is above today's by any dividend that has gone ex since.
     """
     values = np.zeros(len(instruments), dtype=np.float64)
     groups: dict[str, list[int]] = {}
@@ -177,6 +196,8 @@ def price_instruments(
         else:
             market = snapshot.market(instrument.underlying)
             price, _ = linear_unit_exposure(instrument, market, snapshot.as_of)
+            if instrument.expiry is not None and instrument.expiry <= snapshot.as_of:
+                price += market.dividends_paid(instrument.expiry, snapshot.as_of)
             values[i] = price * instrument.multiplier
     for symbol, indices in groups.items():
         contracts = [instruments[i] for i in indices]
@@ -202,7 +223,10 @@ def _price_group(
     K = np.array([c.strike for c in group], dtype=np.float64)
     omega = np.array([c.right.omega for c in group], dtype=np.float64)
     live = T > 0.0
-    prices = np.maximum(omega * (market.spot - K), 0.0)
+    settlement = np.array(
+        [market.spot + market.dividends_paid(c.expiry, as_of) for c in group], dtype=np.float64
+    )
+    prices = np.maximum(omega * (settlement - K), 0.0)
     if not np.any(live):
         return prices
     forwards = np.array(
@@ -233,7 +257,20 @@ def _price_group(
         prices[sel] = american_price(batch, steps)
     # Worth at least immediate exercise, as in valuation.
     intrinsic = np.maximum(omega * (market.spot - K), 0.0)
-    return np.where(is_american, np.maximum(prices, intrinsic), prices)
+    return np.where(is_american & live, np.maximum(prices, intrinsic), prices)
+
+
+def _dividend_income(
+    instruments: Sequence[Instrument], snapshot: MarketSnapshot, scenario: Scenario
+) -> FloatArray:
+    """Cash paid to one unit of stock or proxy by dividends going ex inside the horizon."""
+    horizon = _horizon(snapshot.as_of, scenario)
+    income = np.zeros(len(instruments), dtype=np.float64)
+    for i, instrument in enumerate(instruments):
+        if isinstance(instrument, LinearInstrument) and instrument.kind is not LinearKind.FUTURE:
+            paid = snapshot.market(instrument.underlying).dividends_paid(snapshot.as_of, horizon)
+            income[i] = instrument.multiplier * instrument.delta_ratio * paid
+    return income
 
 
 def scenario_pnl_matrix(
@@ -253,7 +290,8 @@ def scenario_pnl_matrix(
     settled = np.array([is_expired_instrument(i, snapshot.as_of) for i in instruments], dtype=bool)
     for row, scenario in enumerate(scenarios):
         shocked = shock_snapshot(snapshot, scenario)
-        out[row] = price_instruments(instruments, shocked, tree_steps=tree_steps) - base
+        repriced = price_instruments(instruments, shocked, tree_steps=tree_steps)
+        out[row] = repriced - base + _dividend_income(instruments, snapshot, scenario)
     out[:, settled] = 0.0
     return out
 

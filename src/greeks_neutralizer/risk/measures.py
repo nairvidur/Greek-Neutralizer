@@ -90,7 +90,6 @@ class PnLAttribution:
     vanna: float
     volga: float
     theta: float
-    rates_carry: float
     unexplained: float
 
     @property
@@ -140,7 +139,6 @@ def attribute_pnl(
     explained = sum(terms.values())
     return PnLAttribution(
         total=total,
-        rates_carry=0.0,
         unexplained=total - explained,
         **terms,
     )

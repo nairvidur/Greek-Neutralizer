@@ -369,11 +369,24 @@ def test_impact_tier_is_used_only_past_displayed_size():
 
 
 def test_zero_bid_cannot_be_sold():
-    worthless = HedgeCandidate(euro("call", 200, 60), Quote(0.0, 0.05, 100, 100, AS_OF))
-    p = solve(candidates=(worthless, stock_candidate()))
-    for leg in p.legs:
-        if leg.instrument == worthless.instrument:
-            assert leg.quantity > 0
+    held = euro("call", 105, 60)
+    fair_price = black_greeks(100.0, 105, 60 / 365, 0.05, 0.0, 0.25, 1).price[0]
+
+    def traded(bid):
+        market = Quote(bid, 2.0 * fair_price - bid, 100, 100, AS_OF)
+        proposal = solve(
+            book=(Position(held, 10),),
+            candidates=(HedgeCandidate(held, market), option_candidate("call", 130, 60)),
+            config=HedgeConfig(risk_aversion=1000.0),
+        )
+        return proposal.quantities
+
+    # With any bid at all, selling this contract is the exact offset, so the book wants to sell it.
+    assert traded(0.01)[held.key] < 0
+    # With no bid, the book still wants to reduce its risk, and has to use the alternative.
+    no_bid = traded(0.0)
+    assert no_bid.get(held.key, 0) >= 0
+    assert no_bid
 
 
 @pytest.mark.parametrize(
@@ -567,26 +580,6 @@ def test_stock_moving_with_spot_is_not_instability():
     assert p.stability is not None
     assert p.stability.lot_change_ratio == 0.0
     assert p.stability.is_stable
-
-
-def test_stability_is_measured_even_when_the_usable_candidates_change():
-    # Regression: lots were only compared when both solves had the same candidate count. On a real
-    # chain, a perturbation changed the set, the comparison was skipped, and it reported 0.0.
-    from greeks_neutralizer.domain import Quote as QuoteType
-    from greeks_neutralizer.hedging.diagnostics import _contract_lots
-    from greeks_neutralizer.hedging.optimizer import _filter_candidates
-
-    problem = HedgeProblem(BOOK, CANDIDATES, DGV, (), HedgeConfig(risk_aversion=10.0))
-    usable, _ = _filter_candidates(problem, flat_snapshot())
-    lots = np.zeros(len(usable), dtype=np.int64)
-    lots[1] = 5
-    lots[0] = 1000
-    held = _contract_lots(usable, lots)
-    assert held == {usable[1].candidate.instrument.key: 5}
-    # Keyed by instrument, so that another candidate list compares correctly.
-    reversed_usable = list(reversed(usable))
-    assert _contract_lots(reversed_usable, lots[::-1]) == held
-    assert isinstance(usable[0].candidate.quote, QuoteType)
 
 
 def test_stability_report_on_diversified_hedges():

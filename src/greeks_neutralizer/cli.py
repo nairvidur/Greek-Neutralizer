@@ -70,10 +70,10 @@ def _load(path: Path) -> Any:
     from greeks_neutralizer.errors import ValidationError
 
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ValidationError(f"cannot read {path}: {exc.strerror}") from exc
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise ValidationError(f"{path} is not valid JSON: {exc}") from exc
 
 
@@ -223,8 +223,8 @@ def _cmd_frontier(args: argparse.Namespace) -> dict[str, Any]:
                 "legs": p.n_legs,
                 "residual": p.penalized_residual,
                 "worst_stress": p.worst_scenario_pnl,
-                "status": p.status or ("infeasible" if p.infeasible_reason else "baseline"),
-                "reason": p.infeasible_reason or "",
+                "status": p.status or "baseline",
+                "reason": p.unsolved_reason or "",
                 "issues": len(p.issues),
             }
             for p in hedge_frontier(problem, snapshot)
@@ -266,16 +266,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(encode(_home()))
         return 0
 
+    # Help and usage errors come first and go to the real stdout. Only the engine needs guarding.
+    parsed = _parse(args_list, encode)
+    if isinstance(parsed, int):
+        return parsed
+
     real_stdout = _capture_native_stdout()
     try:
-        return _run(args_list, real_stdout, encode)
+        return _run(parsed, real_stdout, encode)
     finally:
         sys.stdout.flush()
         os.dup2(real_stdout, 1)
         os.close(real_stdout)
 
 
-def _run(args_list: list[str], fd: int, encode: Any) -> int:
+def _parse(args_list: list[str], encode: Any) -> argparse.Namespace | int:
+    """The parsed arguments, or the exit code when parsing has already said all there is to say."""
     parser, subparsers = _parser()
     try:
         # Unknown flags are rejected here, by the subcommand they were given to, so that the error
@@ -285,12 +291,17 @@ def _run(args_list: list[str], fd: int, encode: Any) -> int:
             owner = subparsers.get(args.command or "", parser)
             owner.error(f"unknown argument(s): {' '.join(unknown)}")
     except UsageError as exc:
-        _emit(fd, encode({"error": str(exc), "help": exc.help_text}))
+        print(encode({"error": str(exc), "help": exc.help_text}))
         return 2
     except SystemExit as exc:  # --help
-        sys.stdout.flush()
         return int(exc.code or 0)
+    if args.command is None:
+        print(encode({"error": "no command given", "help": "Run `gn` for an overview"}))
+        return 2
+    return args
 
+
+def _run(args: argparse.Namespace, fd: int, encode: Any) -> int:
     handlers = {
         "value": _cmd_value,
         "stress": _cmd_stress,
@@ -298,10 +309,6 @@ def _run(args_list: list[str], fd: int, encode: Any) -> int:
         "frontier": _cmd_frontier,
         "example": _cmd_example,
     }
-    if args.command is None:
-        _emit(fd, encode({"error": "no command given", "help": "Run `gn` for an overview"}))
-        return 2
-
     from greeks_neutralizer.errors import GNError, HedgeInfeasibleError
 
     try:

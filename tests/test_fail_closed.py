@@ -350,11 +350,16 @@ def test_stale_market_cannot_be_submitted_approved_or_exported(tmp_path):
     )
     proposal = _verified_proposal()
     record = store.submit(proposal, "alice")
+    approved = store.submit(proposal, "alice")
+    store.approve(approved.id, "bob")
+    assert store.export_tickets(approved.id, "bob")
     clock.now += timedelta(minutes=3)
     with pytest.raises(WorkflowError, match="market"):
         store.approve(record.id, "bob")
     with pytest.raises(WorkflowError, match="market"):
         store.submit(proposal, "alice")
+    with pytest.raises(WorkflowError, match="market"):
+        store.export_tickets(approved.id, "bob")
 
 
 def test_audit_failure_blocks_the_action(store, monkeypatch):
@@ -376,9 +381,14 @@ def test_broken_chain_blocks_approval_and_export(tmp_path):
     path = tmp_path / "a.jsonl"
     store = ProposalStore(AuditLog(path), clock=Clock())
     record = store.submit(_verified_proposal(), "alice")
+    approved = store.submit(_verified_proposal(), "alice")
+    store.approve(approved.id, "bob")
+    assert store.export_tickets(approved.id, "bob")
     path.write_text(path.read_text().replace("alice", "mallory"))
     with pytest.raises(WorkflowError, match="audit"):
         store.approve(record.id, "bob")
+    with pytest.raises(WorkflowError, match="audit"):
+        store.export_tickets(approved.id, "bob")
 
 
 def test_truncating_the_tail_is_detected(tmp_path):
@@ -593,11 +603,13 @@ def test_non_numeric_open_interest_counts_as_rejected():
 
 
 def test_frontier_points_carry_status_and_issues():
+    # Two stale candidates of seven is over the share of exclusions that must be reported.
+    stale = (fair("call", 110, 60, age=3600.0), fair("put", 85, 60, age=3600.0))
     points = hedge_frontier(
-        HedgeProblem(BOOK, UNIVERSE, DGV), flat_snapshot(), risk_aversions=(1.0,)
+        HedgeProblem(BOOK, (*UNIVERSE, *stale), DGV), flat_snapshot(), risk_aversions=(1.0,)
     )
-    assert points[-1].status == "optimal" or points[-1].status == "within_gap"
-    assert isinstance(points[-1].issues, tuple)
+    assert points[-1].status in ("optimal", "within_gap")
+    assert any(issue.startswith("EXCLUDED 2 of 7") for issue in points[-1].issues)
 
 
 # --- Backtest reporting ---

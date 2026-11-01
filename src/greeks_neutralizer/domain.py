@@ -184,6 +184,11 @@ class LinearInstrument:
             require_aware("expiry", self.expiry)
         elif self.expiry is not None:
             raise ValidationError(f"only a future has an expiry, not a {self.kind.value}")
+        # Nothing would read these, so reject them: a mistake in one must not pass silently.
+        if self.kind is LinearKind.FUTURE and self.delta_ratio != 1.0:
+            raise ValidationError("a future's delta comes from carry, so it takes no delta_ratio")
+        if self.kind is not LinearKind.PROXY and self.basis_vol != 0.0:
+            raise ValidationError(f"only a proxy has a basis_vol, not a {self.kind.value}")
         if self.kind is LinearKind.PROXY and self.basis_vol == 0.0:
             raise ValidationError("a proxy hedge must state a positive basis_vol")
 

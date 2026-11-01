@@ -16,7 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from greeks_neutralizer.domain import LinearInstrument, Position
-from greeks_neutralizer.errors import HedgeInfeasibleError, ValidationError
+from greeks_neutralizer.errors import HedgeInfeasibleError, SearchLimitError, ValidationError
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -93,6 +93,10 @@ def stability_report(
 
     used = np.flatnonzero(lots)
     notes: list[str] = []
+    hit_time_limit = False
+    # Only what the base solve accepted. The re-solves skip the quote-to-model gates because the
+    # market is shocked on purpose, and a quote rejected today must not come back through that gap.
+    accepted = replace(problem, candidates=tuple(row.candidate for row in usable))
     condition = _condition_number(problem, usable, used, program)
 
     hedge_positions = [
@@ -112,7 +116,7 @@ def stability_report(
         held = _penalized_residual(problem.targets, value_book(hedged, shocked).by_underlying)
         drift[perturbation.name] = held - base_residual
         try:
-            moved_usable, _ = _filter_candidates(problem, shocked, compare_quotes_to_model=False)
+            moved_usable, _ = _filter_candidates(accepted, shocked, compare_quotes_to_model=False)
             book = value_book(problem.book, shocked)
             moved_scenario = book_scenario_pnl(problem.book, shocked, problem.scenarios)
             moved_units = (
@@ -131,6 +135,11 @@ def stability_report(
             worst_change = max(worst_change, 1.0)
             worst_regret = max(worst_regret, float("inf"))
             continue
+        except SearchLimitError as exc:
+            raise SearchLimitError(
+                f"the stability check could not finish under {perturbation.name}: {exc}"
+            ) from exc
+        hit_time_limit = hit_time_limit or moved.hit_time_limit
         other = _contract_lots(moved_usable, moved.lots)
         change = sum(abs(base.get(key, 0) - other.get(key, 0)) for key in {*base, *other})
         worst_change = max(worst_change, change / denominator)
@@ -159,6 +168,7 @@ def stability_report(
         drift=drift,
         is_stable=not notes,
         notes=tuple(notes),
+        hit_time_limit=hit_time_limit,
     )
 
 
@@ -231,7 +241,8 @@ class FrontierPoint:
     penalized_residual: float
     worst_scenario_pnl: float | None
     proposal: HedgeProposal | None
-    infeasible_reason: str | None = None
+    # Why this point has no proposal. `status` then says which kind: infeasible or search_limit.
+    unsolved_reason: str | None = None
     status: str | None = None
     issues: tuple[str, ...] = ()
 
@@ -250,8 +261,6 @@ def hedge_frontier(
     Doing nothing and delta-only are always present, so a recommendation can be judged against the
     trivial alternatives.
     """
-    from greeks_neutralizer.hedging.optimizer import solve_hedge
-
     book = value_book(problem.book, snapshot)
     before_scenarios = {}
     if problem.scenarios:
@@ -274,24 +283,9 @@ def hedge_frontier(
         points.append(_point("delta only", None, delta_only, snapshot, problem.targets))
     for aversion in risk_aversions:
         adjusted = replace(problem, config=replace(problem.config, risk_aversion=aversion))
-        try:
-            proposal = solve_hedge(adjusted, snapshot)
-        except HedgeInfeasibleError as exc:
-            points.append(
-                FrontierPoint(
-                    f"risk aversion {aversion:g}",
-                    aversion,
-                    0.0,
-                    0,
-                    0,
-                    float("nan"),
-                    None,
-                    None,
-                    "; ".join(exc.binding) or str(exc),
-                )
-            )
-            continue
-        points.append(_from_proposal(f"risk aversion {aversion:g}", aversion, proposal, problem))
+        points.append(
+            _point(f"risk aversion {aversion:g}", aversion, adjusted, snapshot, problem.targets)
+        )
     return tuple(points)
 
 
@@ -306,6 +300,8 @@ def _delta_only_problem(problem: HedgeProblem) -> HedgeProblem | None:
         risk_aversion=1.0,
         max_quote_age=problem.config.max_quote_age,
         require_quote_size=problem.config.require_quote_size,
+        mip_node_limit=problem.config.mip_node_limit,
+        time_limit_seconds=problem.config.time_limit_seconds,
     )
     return HedgeProblem(problem.book, linear, targets, problem.scenarios, config)
 
@@ -319,9 +315,21 @@ def _point(
 ) -> FrontierPoint:
     from greeks_neutralizer.hedging.optimizer import solve_hedge
 
-    proposal = solve_hedge(problem, snapshot)
+    try:
+        proposal = solve_hedge(problem, snapshot)
+    except HedgeInfeasibleError as exc:
+        reason = "; ".join(exc.binding) or str(exc)
+        return _unsolved_point(label, aversion, "infeasible", reason)
+    except SearchLimitError as exc:
+        return _unsolved_point(label, aversion, "search_limit", str(exc))
     return _from_proposal(
         label, aversion, proposal, replace(problem, targets=tuple(report_targets))
+    )
+
+
+def _unsolved_point(label: str, aversion: float | None, status: str, reason: str) -> FrontierPoint:
+    return FrontierPoint(
+        label, aversion, 0.0, 0, 0, float("nan"), None, None, unsolved_reason=reason, status=status
     )
 
 

@@ -133,8 +133,10 @@ class HedgeConfig:
     ticket_cost: float = 0.0
     premium_budget: float | None = None
     mip_gap: float = 5e-3
-    # The search stops at a node count, which gives the same answer on any machine under any load.
-    # The wall-clock limit is only a backstop, and a run that reaches it says so.
+    # The search stops at a node count, which does not depend on machine load. Two byte-identical
+    # runs on one machine, one under load, are all that was measured: same library versions only,
+    # and other architectures are unverified. The wall-clock limit is only a backstop, and a run
+    # that reaches it says so.
     mip_node_limit: int = 300
     time_limit_seconds: float = 30.0
     max_quote_age: timedelta = timedelta(seconds=30)
@@ -212,8 +214,10 @@ class HedgeProblem:
         # Legs, limits, and scenario P&L are all looked up by these, so each must name one thing.
         _reject_duplicates("candidate", [c.instrument.key for c in self.candidates])
         _reject_duplicates("scenario", [s.name for s in self.scenarios])
-        if not self.targets and not self.scenarios:
-            raise ValidationError("a hedge problem needs targets or scenarios to act on")
+        # Scenarios act on the objective only through CVaR. Without it they would do nothing, and
+        # "no trade improves the objective" would read as a clean answer.
+        if not self.targets and self.config.cvar_weight <= 0.0:
+            raise ValidationError("a hedge problem needs targets, or scenarios with a cvar_weight")
         if self.config.cvar_weight > 0.0 and not self.scenarios:
             raise ValidationError("cvar_weight requires scenarios")
 
@@ -275,6 +279,7 @@ class StabilityReport:
     market, as a share of the base trade's contracts. `regret_ratio` is how much worse today's hedge
     is than the re-solved one in that market, as a share of the benefit of hedging. `drift` is the
     dollar change in a held hedge's penalized residual. `condition_number` is for inspection only.
+    `hit_time_limit` says a re-solve stopped at the wall-clock backstop.
     """
 
     condition_number: float
@@ -283,17 +288,23 @@ class StabilityReport:
     drift: Mapping[str, float]
     is_stable: bool
     notes: tuple[str, ...]
+    hit_time_limit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class RunManifest:
-    """Everything needed to reproduce a proposal."""
+    """What a replay of the same request must match. Library versions are recorded because a new
+    HiGHS or SciPy can change the search, and `run_stability` because it changes status and issues.
+    """
 
     code_version: str
     market_fingerprint: str
     problem_fingerprint: str
     as_of: datetime
     solver: str
+    scipy_version: str
+    numpy_version: str
+    run_stability: bool
 
 
 @dataclass(frozen=True, slots=True)

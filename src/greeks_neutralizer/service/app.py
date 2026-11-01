@@ -35,6 +35,7 @@ from greeks_neutralizer.errors import (
     GNError,
     HedgeInfeasibleError,
     MarketDataError,
+    SearchLimitError,
     ValidationError,
 )
 from greeks_neutralizer.examples import example_request
@@ -186,6 +187,10 @@ def create_app(
             {"error": str(exc), "type": "infeasible", "binding": list(exc.binding)}, 422
         )
 
+    @app.exception_handler(SearchLimitError)
+    async def search_limit(_: Request, exc: SearchLimitError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "type": "search_limit"}, 422)
+
     @app.exception_handler(ValidationError)
     async def invalid(_: Request, exc: ValidationError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "type": "validation"}, 422)
@@ -311,7 +316,7 @@ def create_app(
                         "n_legs": p.n_legs,
                         "penalized_residual": p.penalized_residual,
                         "worst_scenario_pnl": p.worst_scenario_pnl,
-                        "infeasible_reason": p.infeasible_reason,
+                        "unsolved_reason": p.unsolved_reason,
                         "status": p.status,
                         "issues": list(p.issues),
                     }

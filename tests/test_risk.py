@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from greeks_neutralizer.domain import OptionContract, OptionRight, Position
+from greeks_neutralizer.domain import OptionRight, Position
 from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.market import CashDividend, DiscountCurve, FlatVol, MarketSnapshot
 from greeks_neutralizer.pricing.black import black_greeks
@@ -65,14 +65,13 @@ def test_no_shock_means_no_pnl():
 
 
 def test_short_tenor_moves_more_than_long_under_term_shock():
-    short, long_ = euro("call", 100, 7), euro("call", 100, 365)
     scenario = Scenario("v", vol_shock=0.05, term_power=0.5)
     shocked = shock_snapshot(flat_snapshot(), scenario)
     s_sigma = shocked.market("XYZ").surface.vol(np.array([0.0]), np.array([7 / 365]))[0]
     l_sigma = shocked.market("XYZ").surface.vol(np.array([0.0]), np.array([1.0]))[0]
-    assert s_sigma > l_sigma > 0.25
-    assert isinstance(short, OptionContract)
-    assert isinstance(long_, OptionContract)
+    # The stated rule: the shock decays from a 30-day reference tenor as (30d / tau)^power.
+    assert_allclose(s_sigma, 0.25 + 0.05 * (30 / 7) ** 0.5)
+    assert_allclose(l_sigma, 0.25 + 0.05 * (30 / 365) ** 0.5)
 
 
 def test_vol_cannot_go_negative_under_a_large_crush():
@@ -178,7 +177,7 @@ def test_attribution_sums_and_explains_a_small_move():
         {"XYZ": replace(start.market("XYZ"), spot=100.5, surface=FlatVol(0.255))},
     )
     a = attribute_pnl(book, start, end)
-    explained = a.delta + a.gamma + a.vega + a.vanna + a.volga + a.theta + a.rates_carry
+    explained = a.delta + a.gamma + a.vega + a.vanna + a.volga + a.theta
     assert_allclose(explained + a.unexplained, a.total, atol=1e-8)
     assert a.unexplained_ratio < 0.02
     assert a.delta > 0.0 and a.gamma > 0.0 and a.vega > 0.0 and a.theta < 0.0

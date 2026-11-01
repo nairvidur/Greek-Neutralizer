@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy import __version__ as scipy_version
 from scipy import sparse
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
@@ -35,6 +36,7 @@ from greeks_neutralizer.errors import (
     GNError,
     HedgeInfeasibleError,
     MarketDataError,
+    SearchLimitError,
     ValidationError,
 )
 from greeks_neutralizer.hedging.problem import (
@@ -249,6 +251,10 @@ def _economics(candidate: HedgeCandidate, exposure: Exposure, config: HedgeConfi
         sell_total_cap=in_lots(sell_max),
         basis_risk_per_unit_1d=float(basis),
     )
+
+
+def _reached_clock(result: Any) -> bool:
+    return bool(result.status == 1 and "time limit" in str(result.message).lower())
 
 
 @dataclass(frozen=True, slots=True)
@@ -694,13 +700,20 @@ class _Program:
             raise HedgeInfeasibleError(
                 "no hedge satisfies the hard constraints", self.diagnose_infeasibility()
             )
-        if relaxed.x is None:
+        if relaxed.status == 1:
+            raise SearchLimitError(
+                f"the continuous relaxation did not finish inside {config.time_limit_seconds:g}s, "
+                "which says nothing about whether a hedge exists: raise time_limit_seconds, or "
+                "reduce the universe"
+            )
+        if relaxed.status != 0 or relaxed.x is None:
             raise GNError(f"hedge solver failed on the relaxation: {relaxed.message}")
         lower_bound = float(relaxed.fun)
         lp_lots = self._net_lots(np.asarray(relaxed.x, dtype=np.float64))
         screened = self._screen(relaxed, lp_lots)
 
-        result = None
+        result: Any = None
+        reached_clock = False
         for widen, use_screen in ((1.0, True), (4.0, True), (4.0, False)):
             win_lb, win_ub = self._windowed_bounds(lp_lots, widen)
             if use_screen:
@@ -718,18 +731,21 @@ class _Program:
                     "disp": False,
                 },
             )
+            reached_clock = reached_clock or _reached_clock(result)
             if result.x is not None:
                 break
-        if result is not None and result.x is None and result.status == 1:
-            raise GNError(
-                f"no integer hedge was found inside the {config.time_limit_seconds:g}s time limit: "
-                "raise time_limit_seconds, or reduce the universe"
-            )
-        if result is None or result.x is None:
+        if result.x is None and result.status == 2:
             raise HedgeInfeasibleError(
                 "the continuous hedge is feasible but no integer lots are: widen a band by about "
                 "one contract's exposure",
                 self.diagnose_infeasibility(),
+            )
+        if result.x is None:
+            raise SearchLimitError(
+                f"the integer search stopped with no hedge, inside mip_node_limit="
+                f"{config.mip_node_limit} and time_limit_seconds={config.time_limit_seconds:g}. "
+                "That does not show that no hedge exists: raise mip_node_limit or "
+                f"time_limit_seconds, or reduce the universe. Solver: {result.message}"
             )
         x = np.asarray(result.x, dtype=np.float64)
         lots = np.zeros(self.n, dtype=np.int64)
@@ -745,8 +761,7 @@ class _Program:
                 "limits: widen a band by about one unit's exposure"
             )
         gap = (objective - lower_bound) / max(abs(objective), 1.0)
-        hit_time_limit = result.status == 1 and "time limit" in str(result.message).lower()
-        return _Solution(lots, objective, max(gap, 0.0), lower_bound, hit_time_limit)
+        return _Solution(lots, objective, max(gap, 0.0), lower_bound, reached_clock)
 
     def diagnose_infeasibility(self) -> tuple[str, ...]:
         """Which hard constraints cannot be met, found by solving with explicit slack on each.
@@ -840,6 +855,8 @@ class _Program:
             bounds=Bounds(lb, ub),
             options={"time_limit": config.time_limit_seconds, "disp": False},
         )
+        if result.x is None and result.status != 2:
+            return (f"the binding constraints could not be diagnosed: {result.message}",)
         if result.x is None:
             return ("constraints conflict even with all bands relaxed: check capacity",)
         slack = np.asarray(result.x[self.size :], dtype=np.float64)
@@ -849,9 +866,12 @@ class _Program:
         return found or ("infeasible only under integer lots: widen a band by one contract's size",)
 
 
-def _problem_fingerprint(problem: HedgeProblem) -> str:
-    """Over the dataclass repr, so that every field of every input is covered by construction."""
-    return hashlib.sha256(repr(problem).encode()).hexdigest()
+def _problem_fingerprint(problem: HedgeProblem, run_stability: bool) -> str:
+    """Over the dataclass repr, so that every field of every input is covered by construction.
+
+    The stability flag is an input too, since it changes a proposal's status and issues.
+    """
+    return hashlib.sha256(f"{problem!r}|run_stability={run_stability}".encode()).hexdigest()
 
 
 def verify_proposal(
@@ -1091,7 +1111,7 @@ def solve_hedge(
     status = ProposalStatus.NO_TRADE if not legs else ProposalStatus.OPTIMAL
     if not usable:
         status = ProposalStatus.NO_USABLE_CANDIDATES
-    if solution.hit_time_limit:
+    if solution.hit_time_limit or (stability is not None and stability.hit_time_limit):
         issues.append(
             f"SOLVER_TIME_LIMIT the search stopped at the {config.time_limit_seconds:g}s backstop, "
             "so this result depends on machine speed and will not replay exactly"
@@ -1132,9 +1152,12 @@ def solve_hedge(
         manifest=RunManifest(
             code_version=__version__,
             market_fingerprint=snapshot.fingerprint(),
-            problem_fingerprint=_problem_fingerprint(problem),
+            problem_fingerprint=_problem_fingerprint(problem, run_stability),
             as_of=snapshot.as_of,
             solver="scipy.optimize.milp/HiGHS",
+            scipy_version=scipy_version,
+            numpy_version=np.__version__,
+            run_stability=run_stability,
         ),
     )
 
