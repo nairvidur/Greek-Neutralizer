@@ -120,7 +120,7 @@ def test_nan_quotes_are_excluded_not_fitted():
 
 
 def test_invalid_slice_rejected():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="out of domain"):
         SviSlice(0.25, 0.01, 0.05, -1.0, 0.0, 0.2)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="negative"):
         SviSlice(0.25, -1.0, 0.05, 0.0, 0.0, 0.2)

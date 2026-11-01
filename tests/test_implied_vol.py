@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from numpy.testing import assert_allclose
 
@@ -68,8 +68,7 @@ def test_round_trip_property(moneyness, vol, tau, om):
     F, K, df = 100.0, 100.0 * moneyness, 0.98
     price = _premium(F, K, df, vol, tau, om)[0]
     intrinsic = max(om * (F - K), 0.0)
-    if price / df - intrinsic < 1e-9:
-        return
+    assume(price / df - intrinsic >= 1e-9)
     result = implied_vol(price, F, K, df, tau, om)
     assert result.status[0] == IVStatus.OK
     assert_allclose(result.vol[0], vol, rtol=1e-6)
@@ -93,7 +92,7 @@ def test_at_intrinsic_is_reported():
 
 
 def test_nan_price_rejected():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="NaN or inf"):
         implied_vol(float("nan"), 100.0, 100.0, 1.0, 0.25, 1)
 
 

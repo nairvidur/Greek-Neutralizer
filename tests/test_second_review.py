@@ -12,7 +12,7 @@ import io
 import json
 import math
 import threading
-from dataclasses import fields, replace
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -41,6 +41,7 @@ from greeks_neutralizer.hedging.problem import (
     HedgeConfig,
     HedgeLeg,
     HedgeProblem,
+    ProposalStatus,
 )
 from greeks_neutralizer.market import DiscountCurve, FlatVol, MarketSnapshot, UnderlyingMarket
 from greeks_neutralizer.pricing.book import value_book
@@ -97,21 +98,21 @@ HOSTILE = (
 
 @pytest.mark.parametrize("bad", HOSTILE)
 def test_ticket_symbols_refuse_hostile_text_at_construction(bad):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exchange_symbol must be"):
         option(root=bad)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="underlying must be"):
         option(underlying=bad)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="symbol must be"):
         LinearInstrument(bad, "XYZ")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="underlying must be"):
         LinearInstrument("XYZ", bad)
 
 
 @pytest.mark.parametrize("bad", ["", 5, None, ["SPX"]])
 def test_required_symbols_must_be_non_empty_text(bad):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="underlying must be"):
         option(underlying=bad)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="symbol must be"):
         LinearInstrument(bad, "XYZ")
 
 
@@ -125,7 +126,7 @@ def test_real_roots_and_index_symbols_are_admitted(good):
 def test_injected_root_never_reaches_a_ticket_through_the_schema():
     request = example_request()
     request["candidates"][1]["instrument"]["exchange_symbol"] = "XYZ|54=2|38=99999"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exchange_symbol"):
         parse_hedge_request(request)
 
 
@@ -172,11 +173,11 @@ def test_stock_ticket_has_no_maturity(proposal):
 def test_csv_ticket_cells_cannot_start_a_formula(symbol):
     # Spreadsheets run a cell starting = + - or @. The ticket writes symbols as they are, so such a
     # symbol must never become an instrument, by any of the three fields a ticket prints.
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="symbol must be"):
         LinearInstrument(symbol, "XYZ")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="underlying must be"):
         LinearInstrument("XYZ", symbol)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exchange_symbol"):
         option(root=symbol)
 
 
@@ -407,25 +408,46 @@ def test_distinct_instruments_have_distinct_keys(a, b):
     assert a.key != b.key
 
 
-def _fingerprint(candidate_instrument, scenario: Scenario) -> str:
-    problem = HedgeProblem(
-        (Position(euro("call", 100, 30), 1),),
-        (HedgeCandidate(candidate_instrument, STOCK_QUOTE),),
-        (GreekTarget("XYZ", GreekName.DELTA, weight=1.0),),
-        (scenario,),
-    )
-    return solve_hedge(problem, flat_snapshot()).manifest.problem_fingerprint
-
-
 def test_fingerprint_covers_every_input_that_changes_the_answer():
-    stock = LinearInstrument("XYZ", "XYZ")
-    proxy = LinearInstrument("SPY", "XYZ", LinearKind.PROXY, basis_vol=0.01)
-    base = _fingerprint(stock, Scenario("s", spot_shock=-0.1))
-    assert base == _fingerprint(stock, Scenario("s", spot_shock=-0.1))
-    assert base != _fingerprint(stock, Scenario("s", spot_shock=-0.1, sticky_strike=False))
-    assert _fingerprint(proxy, Scenario("s")) != _fingerprint(
-        replace(proxy, basis_vol=0.02), Scenario("s")
+    base_problem = HedgeProblem(
+        (Position(euro("call", 100, 30), 1),),
+        (HedgeCandidate(LinearInstrument("XYZ", "XYZ"), STOCK_QUOTE),),
+        (GreekTarget("XYZ", GreekName.DELTA, weight=1.0),),
+        (Scenario("s", spot_shock=-0.1),),
     )
+    snapshot = flat_snapshot()
+
+    def fingerprint(problem):
+        return solve_hedge(problem, snapshot).manifest.problem_fingerprint
+
+    base = fingerprint(base_problem)
+    assert base == fingerprint(replace(base_problem))
+    candidate = base_problem.candidates[0]
+    proxy = LinearInstrument("SPY", "XYZ", LinearKind.PROXY, basis_vol=0.01)
+    changes = {
+        "book quantity": {"book": (Position(euro("call", 100, 30), 2),)},
+        "book strike": {"book": (Position(euro("call", 101, 30), 1),)},
+        "candidate fee": {"candidates": (replace(candidate, fee_per_unit=0.01),)},
+        "candidate quote": {
+            "candidates": (replace(candidate, quote=replace(STOCK_QUOTE, bid=99.8)),)
+        },
+        "candidate instrument": {"candidates": (replace(candidate, instrument=proxy),)},
+        "target weight": {"targets": (GreekTarget("XYZ", GreekName.DELTA, weight=2.0),)},
+        "target band": {
+            "targets": (GreekTarget("XYZ", GreekName.DELTA, lower=-1e7, upper=1e7, weight=1.0),)
+        },
+        "scenario shock": {"scenarios": (Scenario("s", spot_shock=-0.2),)},
+        "scenario sticky": {"scenarios": (Scenario("s", spot_shock=-0.1, sticky_strike=False),)},
+        "config aversion": {"config": HedgeConfig(risk_aversion=2.0)},
+        "config gate": {"config": HedgeConfig(max_lots_per_leg=4000)},
+    }
+    seen = {base}
+    for name, change in changes.items():
+        changed = fingerprint(replace(base_problem, **change))
+        assert changed not in seen, name
+        seen.add(changed)
+    stability = solve_hedge(base_problem, snapshot, run_stability=True)
+    assert stability.manifest.problem_fingerprint != base
 
 
 # --- Audit log ----------------------------------------------------------------------------------
@@ -750,7 +772,9 @@ BAD_REQUESTS = {
 def test_wrongly_typed_input_is_a_validation_error(mutate):
     request = copy.deepcopy(example_request())
     mutate(request)
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match=r"must be|quoted range|could not convert|too large|not supported"
+    ):
         parse_hedge_request(request)
 
 
@@ -786,7 +810,7 @@ def test_wrongly_typed_input_is_a_structured_cli_error(tmp_path, capfd):
     ],
 )
 def test_constructors_refuse_wrong_types_directly(build):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="must be"):
         build()
 
 
@@ -817,12 +841,27 @@ def test_grid_refuses_a_scenario_set_it_would_ignore(client):
 # --- Policy ------------------------------------------------------------------------------------
 
 
-def test_policy_has_no_switch_for_four_eyes_or_the_unstable_block():
-    # By what it has, so that a bypass under any new name fails here too. Only these two timings.
-    assert {field.name for field in fields(WorkflowPolicy)} == {
-        "approval_valid_for",
-        "max_market_age",
-    }
+@pytest.mark.parametrize(
+    "policy",
+    [
+        WorkflowPolicy(),
+        WorkflowPolicy(approval_valid_for=timedelta(days=1), max_market_age=timedelta(days=1)),
+        WorkflowPolicy(approval_valid_for=timedelta(seconds=1), max_market_age=timedelta(1)),
+    ],
+    ids=["default", "generous", "short"],
+)
+def test_no_policy_lets_a_proposer_approve_or_an_unstable_proposal_through(
+    tmp_path, proposal, policy
+):
+    # The requirement, whatever a policy allows: four eyes, and no approval of an unstable hedge.
+    store = ProposalStore(AuditLog(tmp_path / "a.jsonl"), policy, lambda: DEFAULT_AS_OF)
+    record = store.submit(proposal, "alice")
+    with pytest.raises(WorkflowError, match="four-eyes"):
+        store.approve(record.id, "alice")
+    unstable = store.submit(replace(proposal, status=ProposalStatus.UNSTABLE), "alice")
+    with pytest.raises(WorkflowError, match="unstable"):
+        store.approve(unstable.id, "bob")
+    assert store.approve(record.id, "bob").state.value == "approved"
 
 
 def test_status_survives_serialization():

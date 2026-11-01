@@ -171,7 +171,7 @@ def test_every_attempt_stopping_with_no_incumbent_is_its_own_error(monkeypatch, 
 
 def test_proved_infeasible_integer_search_stays_infeasible(monkeypatch):
     _results(monkeypatch, "milp", [no_incumbent(2, "The problem is infeasible.")])
-    with pytest.raises(HedgeInfeasibleError):
+    with pytest.raises(HedgeInfeasibleError, match="whole number"):
         solve_hedge(problem(), flat_snapshot())
 
 
@@ -222,7 +222,7 @@ def test_frontier_still_reports_a_proved_infeasible_point():
 def test_infeasibility_diagnosis_stopped_at_the_clock_does_not_claim_a_conflict(monkeypatch):
     _results(monkeypatch, "milp", [no_incumbent(1, CLOCK_MESSAGE)])
     band = (GreekTarget("XYZ", GreekName.VEGA, lower=-1.0, upper=1.0),)
-    with pytest.raises(HedgeInfeasibleError) as err:
+    with pytest.raises(HedgeInfeasibleError, match="hard constraints") as err:
         solve_hedge(HedgeProblem(BOOK, (stock_candidate(),), band), flat_snapshot())
     assert any("could not be diagnosed" in text for text in err.value.binding)
     assert not any("conflict" in text for text in err.value.binding)

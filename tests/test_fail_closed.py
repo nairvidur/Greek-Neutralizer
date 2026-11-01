@@ -157,7 +157,7 @@ def test_rounding_finds_a_feasible_neighbour_for_a_band():
 
 def test_unreachable_after_rounding_is_infeasible_not_a_breach():
     band = (GreekTarget("XYZ", GreekName.DELTA, lower=20.0, upper=30.0, weight=0.0),)
-    with pytest.raises(HedgeInfeasibleError):
+    with pytest.raises(HedgeInfeasibleError, match="whole number"):
         solve_hedge(HedgeProblem((), (stock(),), band), flat_snapshot())
 
 
@@ -228,12 +228,12 @@ def test_single_quote_far_from_the_model_is_excluded():
 
 def test_percent_for_decimal_vol_is_caught():
     # sigma=25.0 where 0.25 was meant: repricing agrees with itself, so only quotes can catch it.
-    with pytest.raises(MarketDataError):
+    with pytest.raises(MarketDataError, match="implausible"):
         solve_hedge(HedgeProblem(BOOK, UNIVERSE, DGV), flat_snapshot(vol=25.0))
 
 
 def test_rate_for_decimal_is_caught_by_plausibility():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="implausible"):
         DiscountCurve.flat(5.0)
 
 
@@ -260,13 +260,13 @@ def test_model_and_quotes_disagreeing_broadly_fails_closed():
     ids=lambda d: next(iter(d)),
 )
 def test_config_rejects_nan_and_wrong_types(bad):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="must be"):
         HedgeConfig(**bad)
 
 
 @pytest.mark.parametrize("field", ["fee_per_unit", "impact_per_unit"])
 def test_candidate_rejects_nan(field):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="must be finite"):
         replace(stock(), **{field: float("nan")})
 
 
@@ -367,10 +367,10 @@ def test_audit_failure_blocks_the_action(store, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(store.audit, "append", fail)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="disk full"):
         store.approve(record.id, "bob")
     assert store.get(record.id).state.value == "proposed"
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="disk full"):
         store.submit(_verified_proposal(), "alice")
     assert len(store.list()) == 1
 
@@ -558,9 +558,52 @@ def _noisy_chain(seed=3):
     return out
 
 
-def test_garbage_quotes_cannot_produce_a_surface():
-    with pytest.raises(MarketDataError):
+def _parity_consistent_chain(days, vol_for_strike):
+    # A call and put at one strike share a vol and so hold parity, whatever the smile does.
+    expiry = AS_OF + timedelta(days=days)
+    out = []
+    for K in np.arange(70.0, 131.0, 2.0):
+        vol = vol_for_strike(float(K))
+        for right in OptionRight:
+            price = black_greeks(100.0, K, days / 365, 0.04, 0.0, vol, right.omega).price[0]
+            contract = OptionContract(
+                "XYZ",
+                right,
+                float(K),
+                expiry,
+                ExerciseStyle.EUROPEAN,
+                settlement=SettlementKind.CASH,
+            )
+            quote = Quote(max(price - 0.02, 0.01), price + 0.02, 10, 10, AS_OF)
+            out.append(ChainQuote(contract, quote))
+    return out
+
+
+def test_quotes_that_break_parity_cannot_produce_a_surface():
+    with pytest.raises(MarketDataError, match="parity residual"):
         calibrate_chain(_noisy_chain(), AS_OF, 100.0, discount_rate=0.04)
+
+
+def test_a_smile_no_fit_can_follow_cannot_produce_a_surface():
+    # Parity holds, so that this reaches the fit, and a vol jumping 5% to 150% strike by strike
+    # is out of any SVI slice's reach.
+    rng = np.random.default_rng(3)
+    vols = {float(K): float(rng.uniform(0.05, 1.5)) for K in np.arange(70.0, 131.0, 2.0)}
+    chain = _parity_consistent_chain(91, vols.__getitem__)
+    with pytest.raises(MarketDataError, match="fit error"):
+        calibrate_chain(chain, AS_OF, 100.0, discount_rate=0.04)
+
+
+def test_arbitrage_left_in_a_fit_cannot_produce_a_surface():
+    # Each expiry is flat and fits, but total variance falls with tenor: 0.21^2 * 91/365 is 0.0110,
+    # against 0.14^2 * 182/365 of 0.0098. The fit error stays inside its limit, so that only the
+    # arbitrage gate is left to stop this.
+    chain = [
+        *_parity_consistent_chain(91, lambda _: 0.21),
+        *_parity_consistent_chain(182, lambda _: 0.14),
+    ]
+    with pytest.raises(MarketDataError, match="arbitrage inside"):
+        calibrate_chain(chain, AS_OF, 100.0, discount_rate=0.04, max_weighted_fit_error=0.05)
 
 
 # --- Surfaces -----------------------------------------------------------------------------------

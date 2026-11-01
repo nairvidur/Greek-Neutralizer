@@ -16,7 +16,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from greeks_neutralizer.domain import LinearInstrument, Position, require_symbol
-from greeks_neutralizer.errors import HedgeInfeasibleError, SearchLimitError, ValidationError
+from greeks_neutralizer.errors import (
+    HedgeInfeasibleError,
+    SearchLimitError,
+    SolverRangeError,
+    ValidationError,
+)
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -135,6 +140,10 @@ def stability_report(
             worst_change = max(worst_change, 1.0)
             worst_regret = max(worst_regret, float("inf"))
             continue
+        except SolverRangeError as exc:
+            notes.append(f"could not be re-solved under {perturbation.name}: {exc}")
+            worst_change = max(worst_change, 1.0)
+            continue
         except SearchLimitError as exc:
             raise SearchLimitError(
                 f"the stability check could not finish under {perturbation.name}: {exc}"
@@ -241,7 +250,8 @@ class FrontierPoint:
     penalized_residual: float
     worst_scenario_pnl: float | None
     proposal: HedgeProposal | None
-    # Why this point has no proposal. `status` then says which kind: infeasible or search_limit.
+    # Why this point has no proposal. `status` then says which kind: infeasible, search_limit, or
+    # out_of_range.
     unsolved_reason: str | None = None
     status: str | None = None
     issues: tuple[str, ...] = ()
@@ -354,6 +364,8 @@ def _point(
         return _unsolved_point(label, aversion, "infeasible", reason, book_issues)
     except SearchLimitError as exc:
         return _unsolved_point(label, aversion, "search_limit", str(exc), book_issues)
+    except SolverRangeError as exc:
+        return _unsolved_point(label, aversion, "out_of_range", str(exc), book_issues)
     return _from_proposal(label, aversion, proposal, report_targets)
 
 

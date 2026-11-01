@@ -39,15 +39,15 @@ def quick_request():
 
 def test_refuses_to_start_without_tokens(tmp_path, monkeypatch):
     monkeypatch.delenv("GN_TOKENS", raising=False)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="GN_TOKENS"):
         create_app(audit_path=tmp_path / "a.jsonl")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="no API tokens"):
         create_app({}, tmp_path / "a.jsonl")
 
 
 def test_token_parsing():
     assert _parse_tokens("x=alice, y=bob") == {"x": "alice", "y": "bob"}
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="token=actor"):
         _parse_tokens("justatoken")
 
 
@@ -96,7 +96,11 @@ def test_value_endpoint(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["totals"]["delta_dollars"] != 0.0
+    # Short 10 of each by closed form, 30 days, 5%, 25%, 100 a contract at a spot of 100.
+    call = black_greeks(100.0, 100.0, 30 / 365, 0.05, 0.0, 0.25, 1).delta[0]
+    put = black_greeks(100.0, 95.0, 30 / 365, 0.05, 0.0, 0.25, -1).delta[0]
+    expected = -10 * 100 * (call + put) * 100.0
+    assert body["totals"]["delta_dollars"] == pytest.approx(expected, rel=1e-9)
     assert len(body["lines"]) == 2
 
 

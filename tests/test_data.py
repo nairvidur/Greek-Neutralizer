@@ -36,7 +36,7 @@ from greeks_neutralizer.domain import (
 )
 from greeks_neutralizer.errors import MarketDataError, ValidationError
 from greeks_neutralizer.pricing.black import black_premium
-from greeks_neutralizer.surface import fit_svi_slice
+from greeks_neutralizer.surface import SviSlice, fit_svi_slice
 
 NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
 
@@ -61,7 +61,7 @@ def test_parse_osi(text, root, right, strike):
 
 @pytest.mark.parametrize("bad", ["", "SPY", "SPY261399C00100000", "SPY261113X00100000"])
 def test_bad_osi_rejected(bad):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="OSI"):
         parse_osi(bad)
 
 
@@ -186,20 +186,18 @@ def test_converged_is_scipys_own_status_whatever_the_gradient(monkeypatch, succe
     assert fit_svi_slice(k, 0.2 - 0.1 * k + 0.3 * k * k, 0.25).converged is success
 
 
-def test_a_fit_given_room_converges_and_one_stopped_early_does_not(monkeypatch):
-    # No patched result: SciPy's own status, with evaluations to spare and with two.
+def test_a_fit_scipy_finishes_converges_and_one_stopped_early_does_not(monkeypatch):
+    # No patched result: an exact SVI smile, which SciPy finishes well inside its evaluation limit,
+    # and the same smile allowed only two evaluations.
     k = np.linspace(-0.2, 0.2, 21)
-    vols = 0.2 - 0.1 * k + 0.3 * k * k
-
-    def with_evaluations(limit):
-        def solver(*args, **kwargs):
-            return real_least_squares(*args, **{**kwargs, "max_nfev": limit})
-
-        return solver
-
-    monkeypatch.setattr(surface_module, "least_squares", with_evaluations(20_000))
+    exact = SviSlice(0.25, 0.01, 0.1, -0.4, 0.02, 0.2)
+    vols = np.sqrt(exact.total_variance(k) / 0.25)
     assert fit_svi_slice(k, vols, 0.25).converged
-    monkeypatch.setattr(surface_module, "least_squares", with_evaluations(2))
+
+    def two_evaluations(*args, **kwargs):
+        return real_least_squares(*args, **{**kwargs, "max_nfev": 2})
+
+    monkeypatch.setattr(surface_module, "least_squares", two_evaluations)
     assert not fit_svi_slice(k, vols, 0.25).converged
 
 
@@ -352,5 +350,5 @@ def test_cboe_detects_missing_sizes():
     ],
 )
 def test_cboe_malformed_payload_fails_closed(bad):
-    with pytest.raises(MarketDataError):
+    with pytest.raises(MarketDataError, match="Cboe payload"):
         parse_cboe_delayed(bad)

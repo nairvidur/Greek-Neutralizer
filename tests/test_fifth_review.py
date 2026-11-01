@@ -7,11 +7,13 @@ hand-worked spread and volume arithmetic; and each gate's direction from the mea
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,8 +24,9 @@ from greeks_neutralizer.domain import (
     OptionContract,
     OptionRight,
     Position,
+    Quote,
 )
-from greeks_neutralizer.errors import ValidationError
+from greeks_neutralizer.errors import SolverRangeError, ValidationError
 from greeks_neutralizer.examples import (
     DEFAULT_AS_OF,
     example_book,
@@ -33,11 +36,19 @@ from greeks_neutralizer.examples import (
 from greeks_neutralizer.hedging import optimizer
 from greeks_neutralizer.hedging.diagnostics import hedge_decay_forecast
 from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
+from greeks_neutralizer.hedging.problem import (
+    GreekName,
+    GreekTarget,
+    HedgeCandidate,
+    HedgeConfig,
+    HedgeProblem,
+)
+from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.risk.measures import RiskLimit, expiry_ladder, liquidity_adjusted_cost
 from greeks_neutralizer.schema import parse_hedge_request
 from greeks_neutralizer.service.app import create_app
 from greeks_neutralizer.workflow import AuditLog, ProposalStore
-from tests.conftest import AS_OF, flat_snapshot
+from tests.conftest import AS_OF, euro, flat_snapshot
 
 ALICE = {"Authorization": "Bearer a"}
 BOB = {"Authorization": "Bearer b"}
@@ -68,7 +79,7 @@ def test_a_cvar_only_request_has_a_frontier_with_its_baselines(tmp_path):
     assert response.status_code == 200, response.text
     points = {point["label"]: point for point in response.json()["points"]}
     assert points["do nothing"]["n_legs"] == 0
-    assert points["delta only"]["status"] is not None
+    assert points["delta only"]["status"] in {"optimal", "within_gap"}
     assert points["delta only"]["unsolved_reason"] is None
     # No targets were asked for, so no point has a residual to report.
     assert {point["penalized_residual"] for point in points.values()} == {0.0}
@@ -277,7 +288,7 @@ def test_liquidity_reports_hand_worked_cost_time_and_totals(tmp_path):
     [(float("nan"), 1000.0), (0.05, float("inf")), (-0.01, 1000.0), (0.05, 0.0)],
 )
 def test_unusable_liquidity_inputs_are_refused(half_spread, adv):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=r"half_spread|adv"):
         liquidity_adjusted_cost(
             Position(OptionContract("XYZ", OptionRight.CALL, 100.0, AS_OF), 1), half_spread, adv
         )
@@ -384,6 +395,14 @@ def test_gn_decay(files, capfd):
     assert main([*args, "--days", "1", "40"]) == 0
     out = capfd.readouterr().out
     assert "underlying: XYZ" in out
+    rows = {
+        float(row[0]): [float(cell) for cell in row[1:]]
+        for row in csv.reader(line.strip() for line in out.splitlines() if line.startswith("  "))
+    }
+    # days, delta_dollars, gamma_1pct, vega_1pt, theta_1d, of a short 30-day book. It is short vega
+    # at +1 day, and past expiry by +40, when it has no exposure left at all.
+    assert rows[1.0][2] < -100.0
+    assert rows[40.0] == [0.0, 0.0, 0.0, 0.0]
     assert main([*args, "--full"]) == 0
     assert "vanna_1pt" in capfd.readouterr().out
     assert (
@@ -1075,7 +1094,8 @@ def test_cvar_past_what_the_solver_can_read_is_not_called_infeasible(tmp_path):
 
 def test_an_instrument_too_small_for_the_solver_to_see_is_refused_by_name(tmp_path):
     # Stock at $100 of delta a share, beside a future of about 1e8 a contract, with a book far past
-    # both, puts the stock near 1e-10 on the row, and at 100,000 shares it could still move it.
+    # both, puts the stock near 1e-10 on the row. With 10 futures on offer against 100,000 shares,
+    # the stock can do 1% of what the future can: 1e7 of delta against 1e9.
     request = _big_book_request(10**12, stock_only=True)
     expiry = (DEFAULT_AS_OF + timedelta(days=30)).isoformat()
     future = {
@@ -1086,7 +1106,13 @@ def test_an_instrument_too_small_for_the_solver_to_see_is_refused_by_name(tmp_pa
         "multiplier": 1e6,
         "expiry": expiry,
     }
-    quote = {**request["candidates"][0]["quote"], "bid": 100.4, "ask": 100.42}
+    quote = {
+        **request["candidates"][0]["quote"],
+        "bid": 100.4,
+        "ask": 100.42,
+        "bid_size": 10,
+        "ask_size": 10,
+    }
     request["candidates"].append({"instrument": future, "quote": quote})
     response = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request)
     assert response.status_code == 422, response.text
@@ -1105,6 +1131,121 @@ def test_a_solver_blind_to_an_instrument_cannot_read_as_verified(monkeypatch):
     monkeypatch.setattr(optimizer._Program, "_row_scale", lambda self, target: 1e11)
     with pytest.raises(VerificationError, match="missed a better hedge"):
         solve_hedge(problem, snapshot)
+
+
+def _strike_grid_candidates(spot, strikes, day_counts, *, sizes=10, **caps):
+    """Fair quotes on every strike and expiry, on the same flat 25% vol as `flat_snapshot`."""
+    candidates = []
+    for days in day_counts:
+        for strike in strikes:
+            for right in ("call", "put"):
+                omega = 1 if right == "call" else -1
+                price = black_greeks(spot, strike, days / 365, 0.05, 0.0, 0.25, omega).price[0]
+                if price < 0.05:
+                    continue
+                half = max(0.01 * price, 0.02)
+                quote = Quote(max(price - half, 0.01), price + half, sizes, sizes, AS_OF)
+                candidates.append(HedgeCandidate(euro(right, strike, days), quote, **caps))
+    return tuple(candidates)
+
+
+DGV = tuple(
+    GreekTarget("XYZ", greek) for greek in (GreekName.DELTA, GreekName.GAMMA, GreekName.VEGA)
+)
+
+
+def _strike_grid_hedge(spot, step, candidates_kwargs=None, **config):
+    # Eight expiries, and strikes from about 73% to 133% of spot, on the shape of a real chain.
+    strikes = np.arange(round(spot * 0.73 / step) * step, spot * 1.34, step)
+    days = (7, 14, 30, 45, 60, 90, 120, 180)
+    kwargs = candidates_kwargs or {"max_buy": 5000, "max_sell": 5000}
+    candidates = _strike_grid_candidates(spot, strikes, days, **kwargs)
+    book = (
+        Position(euro("call", float(strikes[len(strikes) // 2]), 30), -50),
+        Position(euro("put", float(strikes[len(strikes) // 3]), 30), -50),
+    )
+    problem = HedgeProblem(book, candidates, DGV, (), HedgeConfig(max_legs=6, **config))
+    return solve_hedge(problem, flat_snapshot(spot=spot))
+
+
+@pytest.mark.parametrize(("spot", "step"), [(6000.0, 25.0), (600.0, 2.5), (150.0, 1.0)])
+def test_a_real_strike_grid_with_depth_gets_a_hedge(spot, step):
+    # Deep options here have gamma and vega under 1e-9 of the largest on their rows, and at 5,000
+    # lots these requests were refused for a size the book does not have, for cents at stake.
+    proposal = _strike_grid_hedge(spot, step)
+    assert 1 <= len(proposal.legs) <= 6
+    assert proposal.verification.passed
+
+
+def test_a_real_strike_grid_with_absent_sizes_gets_a_hedge():
+    # The Cboe source leaves SPX sizes empty, which allows every leg up to the 5,000 lot limit.
+    proposal = _strike_grid_hedge(
+        6000.0, 25.0, {"sizes": 0}, require_quote_size=False, risk_aversion=1.0
+    )
+    assert 1 <= len(proposal.legs) <= 6
+
+
+def test_ordinary_books_on_a_strike_grid_are_not_refused():
+    # A seeded fuzz of ordinary books, with the count recorded: none of these may be refused.
+    rng = np.random.default_rng(11)
+    spot = 755.0
+    strikes = np.arange(550.0, 1005.0, 5.0)
+    days = (7, 14, 30, 60, 90, 180)
+    candidates = _strike_grid_candidates(spot, strikes, days, max_buy=5000, max_sell=5000)
+    refusals = []
+    trials = 25
+    for _ in range(trials):
+        book = tuple(
+            Position(
+                euro(
+                    str(rng.choice(["call", "put"])),
+                    float(rng.choice(strikes)),
+                    int(rng.choice(days)),
+                ),
+                int(rng.integers(-500, 501)) or 1,
+            )
+            for _ in range(int(rng.integers(1, 5)))
+        )
+        problem = HedgeProblem(book, candidates, DGV, (), HedgeConfig(max_legs=6))
+        try:
+            solve_hedge(problem, flat_snapshot(spot=spot))
+        except SolverRangeError as exc:
+            refusals.append(str(exc))
+    assert refusals == [], f"{len(refusals)} of {trials} refused"
+
+
+def test_a_re_solve_out_of_range_marks_the_proposal_unstable_rather_than_refusing(monkeypatch):
+    # A market move can take a request past the solver's range when its base solve was fine. That
+    # is grounds not to approve, and not a 422 for a request that has an answer.
+    problem, snapshot, _ = parse_hedge_request(example_request())
+    real_check = optimizer._Program._check_solver_range
+    calls = []
+
+    def after_the_base_solve(program, constraints):
+        calls.append(1)
+        if len(calls) > 1:
+            raise SolverRangeError("planted")
+        real_check(program, constraints)
+
+    monkeypatch.setattr(optimizer._Program, "_check_solver_range", after_the_base_solve)
+    proposal = solve_hedge(problem, snapshot, run_stability=True)
+    assert proposal.status.value == "unstable"
+    assert proposal.legs
+    assert any("planted" in issue for issue in proposal.issues)
+
+
+def test_one_frontier_point_out_of_range_leaves_the_others_standing(tmp_path):
+    # A delta weight where a risk aversion of 10 passes the 1e15 cost limit and 3 does not: the
+    # row's scale is the book's delta, 32,781, so the penalty at 1 is about 2e14.
+    request = example_request()
+    request["targets"] = [{"underlying": "XYZ", "greek": "delta_dollars", "weight": 6e9}]
+    response = _client(tmp_path).post("/v1/frontier", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    points = {point["label"]: point for point in response.json()["points"]}
+    assert points["risk aversion 10"]["status"] == "out_of_range"
+    assert "objective cost" in points["risk aversion 10"]["unsolved_reason"]
+    assert points["risk aversion 0.01"]["unsolved_reason"] is None
+    assert points["do nothing"]["n_legs"] == 0
 
 
 def test_an_ordinary_hedge_is_not_called_inadequate():
@@ -1194,21 +1335,51 @@ def test_a_future_is_compared_with_the_forward(tmp_path, mid, usable):
     assert len(body["excluded"]) == (0 if usable else 1)
 
 
-def test_a_proxy_is_compared_with_spot_times_its_ratio(tmp_path):
-    request = _stock_quoted_at(10.0)
+def _spxl_request():
+    # SPXL at 200 on an SPX at 6000: triple leverage, so 3 * 200 / 6000 is a delta ratio of 0.1,
+    # while spot times that ratio is 600. A correct quote, a long way from what the rule would say.
+    request = _stock_quoted_at(200.0)
     request["candidates"][0]["instrument"] = {
         "type": "linear",
-        "symbol": "XYP",
+        "symbol": "SPXL",
         "underlying": "XYZ",
         "kind": "proxy",
         "delta_ratio": 0.1,
         "basis_vol": 0.05,
     }
-    client = _client(tmp_path)
-    body = client.post("/v1/hedge", headers=ALICE, json=request).json()
+    request["book"] = [{**request["book"][0], "quantity": -10}]
+    request["book"][0]["instrument"] = {**request["book"][0]["instrument"], "strike": 6000.0}
+    request["market"]["underlyings"]["XYZ"]["spot"] = 6000.0
+    return request
+
+
+def test_a_leveraged_proxy_is_not_refused_and_says_it_was_not_checked(tmp_path):
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=_spxl_request()).json()
     assert body["excluded"] == []
-    request["candidates"][0]["quote"].update(bid=99.99, ask=100.01)
-    assert len(client.post("/v1/hedge", headers=ALICE, json=request).json()["excluded"]) == 1
+    assert [leg["instrument"]["symbol"] for leg in body["legs"]] == ["SPXL"]
+    unchecked = [i for i in body["issues"] if i.startswith("QUOTE_UNCHECKED")]
+    assert len(unchecked) == 1
+    assert "SPXL" in unchecked[0]
+
+
+def test_a_proxy_only_offered_raises_no_unchecked_issue(tmp_path):
+    # The sample hedge with a proxy on offer but too dear to use: nothing to warn the approver of.
+    request = _stock_quoted_at(100.0, options=True)
+    request["candidates"].append(
+        {
+            "instrument": {
+                "type": "linear",
+                "symbol": "XYP",
+                "underlying": "XYZ",
+                "kind": "proxy",
+                "basis_vol": 5.0,
+            },
+            "quote": {**request["candidates"][0]["quote"], "bid": 50.0, "ask": 150.0},
+        }
+    )
+    body = _client(tmp_path).post("/v1/hedge", headers=ALICE, json=request).json()
+    assert "XYP" not in [leg["instrument"].get("symbol") for leg in body["legs"]]
+    assert not any(i.startswith("QUOTE_UNCHECKED") for i in body["issues"])
 
 
 def test_the_quote_gate_can_be_set_by_a_deployment_only(tmp_path, monkeypatch):

@@ -40,7 +40,8 @@ Each request logs one JSON line with its request ID, path, status, and duration.
 | `EXPIRED` in issues | A book contains an expired option | Settle or remove it |
 | `EXTRAPOLATED_VOL` in issues | A strike is beyond the quotes | Treat its value and Greeks as unverified |
 | Many `excluded` candidates | Quotes are stale, crossed, or empty | Check the feed before trusting the result |
-| `excluded` reason "the market implies" | A delta-one quote is more than `max_linear_quote_gap` from spot times its ratio, or from the forward | Check spot, the symbol, and the quote's units. Do not raise `GN_GATE_MAX_LINEAR_QUOTE_GAP` to get a trade through |
+| `QUOTE_UNCHECKED` in issues | A proxy leg's quote has no market reference to compare with | Approvers: check that quote against its own market before approving |
+| `excluded` reason "the market implies" | A stock or future quote is more than `max_linear_quote_gap` from spot times its ratio, or from the forward | Check spot, the symbol, and the quote's units. Do not raise `GN_GATE_MAX_LINEAR_QUOTE_GAP` to get a trade through |
 | `UNCONVERGED_FIT` in a chain script's issues | An expiry's fit reached its evaluation limit, as SciPy reports it | Read that expiry's fit errors before relying on its part of the surface |
 
 ## Gate limits
@@ -73,7 +74,9 @@ A scenario, or a decay step, can look forward at most 36,525 days.
 Every date in a request must fall from 1900 to 2300.
 A `carry_yield` above 1.0 either way is refused, since rates are decimals, and so is a spot above 1e9, a position above 1e12 units, or an objective cost above 1e15.
 A scenario that would take spot past 1e9 is refused too, by name.
-A hedge request is also refused when a scenario loss, band, or budget reaches 1e20, which the solver reads as infinite, or when an instrument at capacity would matter but is too small for it to see.
+A hedge request is also refused when a scenario loss, band, or budget reaches 1e20, which the solver reads as infinite, or when an instrument too small for the solver to see could still do at least 0.1% of what that row's largest hedge can at capacity.
+An option smaller than that is left at zero lots rather than refused.
+A stability re-solve refused this way marks the proposal unstable, and a frontier point refused this way has status `out_of_range`, while the other points stand.
 
 ## Listing proposals
 

@@ -37,6 +37,7 @@ from greeks_neutralizer.errors import (
     HedgeInfeasibleError,
     MarketDataError,
     SearchLimitError,
+    SolverRangeError,
     ValidationError,
 )
 from greeks_neutralizer.hedging.problem import (
@@ -144,15 +145,17 @@ def _linear_quote_gate(
     snapshot: MarketSnapshot,
     config: HedgeConfig,
 ) -> list[HedgeCandidate]:
-    """Compare each delta-one quote with what the market says it is worth.
+    """Compare each stock or future quote with what the market says it is worth.
 
     Spot times the delta ratio, or the forward for a future. Options have the model to catch a wrong
-    spot, but a delta-only hedge has no other evidence, and its limit price reaches the ticket.
+    spot, but a delta-only hedge has no other evidence, and its limit price reaches the ticket. A
+    proxy's price has no such reference, as a leveraged fund's exposure is not its price, so it
+    passes here unchecked and a proposal using one says so.
     """
     kept: list[HedgeCandidate] = []
     for candidate in live:
         instrument = candidate.instrument
-        if isinstance(instrument, LinearInstrument):
+        if isinstance(instrument, LinearInstrument) and instrument.kind is not LinearKind.PROXY:
             market = snapshot.market(instrument.underlying)
             fair, _ = linear_unit_exposure(instrument, market, snapshot.as_of)
             gap = abs(candidate.quote.mid / fair - 1.0)
@@ -294,8 +297,10 @@ _MAX_SOLVER_COST = 1e15
 _MAX_BOOK_TO_HEDGE_SCALE = 1e4
 _HIGHS_SMALL_MATRIX_VALUE = 1e-9
 _HIGHS_INFINITY = 1e20
-# A dropped coefficient matters if the instrument at capacity could move its row by this much.
-_MATERIAL_ROW_MOVE = 1e-6
+# A dropped coefficient matters if the instrument at capacity could do this share of what the row's
+# largest hedge can at capacity. Below it, Black gamma and vega deep in a strike grid are dropped
+# harmlessly, and a real chain nearly always has such options.
+_MATERIAL_SHARE_OF_REACH = 1e-3
 
 
 def _reached_clock(result: Any) -> bool:
@@ -392,7 +397,7 @@ class _Program:
             tail = config.cvar_weight / ((1.0 - config.cvar_alpha) * self.ns)
             c[self.i_u : self.i_u + self.ns] = tail
         if not np.all(np.abs(c) <= _MAX_SOLVER_COST):
-            raise ValidationError(
+            raise SolverRangeError(
                 f"an objective cost is past {_MAX_SOLVER_COST:g}, where the solver cannot be "
                 "relied on: check risk_aversion, cvar_weight, ticket_cost, target weights, and "
                 "candidate fees, impact, and lot sizes"
@@ -497,27 +502,44 @@ class _Program:
         )
 
     def _check_solver_range(self, constraints: list[LinearConstraint]) -> None:
-        """Refuse what HiGHS would silently change: a material coefficient it drops as zero, or a
-        right-hand side it reads as infinite, which can even give a false proof of infeasibility."""
+        """Refuse what HiGHS would silently change: a coefficient it drops as zero where that
+        matters, or a right-hand side it reads as infinite, which can even give a false proof of
+        infeasibility.
+
+        What matters is in the row's own dollars, |exposure| * capacity * risk_aversion * weight,
+        against the same for its largest hedge, so the shared price of the row cancels. An option
+        that could move the objective by cents does not refuse the request: the solver leaves it at
+        zero, and verification reprices the result as it is.
+        """
+        config = self.problem.config
         for target in self.targets:
+            unpriced = config.risk_aversion * target.effective_weight == 0.0
+            if unpriced and target.lower is None and target.upper is None:
+                continue
             scale = self._row_scale(target)
-            for row in self.usable:
+            reach = [
+                abs(self._exposure_column(target, row))
+                * max(row.buy_total_cap, row.sell_total_cap)
+                * row.candidate.lot_size
+                for row in self.usable
+            ]
+            largest = max(reach, default=0.0)
+            for row, row_reach in zip(self.usable, reach, strict=True):
                 coefficient = abs(self._exposure_column(target, row)) / scale
-                capacity = max(row.buy_total_cap, row.sell_total_cap) * row.candidate.lot_size
                 if (
                     0.0 < coefficient < _HIGHS_SMALL_MATRIX_VALUE
-                    and coefficient * capacity >= _MATERIAL_ROW_MOVE
+                    and row_reach >= _MATERIAL_SHARE_OF_REACH * largest
                 ):
-                    raise ValidationError(
+                    raise SolverRangeError(
                         f"{row.candidate.instrument.describe()} is too small against the rest of "
-                        f"the {target.greek.value} row for the solver to see it, with "
-                        f"{self._book_description()}"
+                        f"the {target.greek.value} row for the solver to see it, though it could "
+                        f"matter at capacity, with {self._book_description()}"
                     )
         for limit in constraints:
             for side in (np.asarray(limit.lb), np.asarray(limit.ub)):
                 finite = np.abs(side[np.isfinite(side)])
                 if finite.size and float(finite.max()) >= _HIGHS_INFINITY:
-                    raise ValidationError(
+                    raise SolverRangeError(
                         f"a limit or scenario loss of {float(finite.max()):g} is past what the "
                         f"solver treats as finite, with {self._book_description()}"
                     )
@@ -1221,6 +1243,12 @@ def solve_hedge(
     )
     issues.extend(i for i in hedged_book.issues if i not in issues)
     issues.extend(_depth_issues(legs, problem))
+    issues.extend(
+        f"QUOTE_UNCHECKED {leg.instrument.describe()}: a proxy has no market reference, so its "
+        "quote was not compared with the market"
+        for leg in legs
+        if isinstance(leg.instrument, LinearInstrument) and leg.instrument.kind is LinearKind.PROXY
+    )
     transaction_cost = sum(leg.transaction_cost for leg in legs)
     stability = None
     if run_stability and legs:

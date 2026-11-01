@@ -20,6 +20,7 @@ from greeks_neutralizer.errors import ValidationError
 from greeks_neutralizer.examples import example_book, example_market, example_request
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.hedging.problem import HedgeLeg, ProposalStatus
+from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES, book_scenario_pnl
 from greeks_neutralizer.schema import (
     parse_book,
@@ -114,7 +115,13 @@ def test_bad_json_is_a_structured_error(tmp_path):
 def test_value_runs_end_to_end(files):
     result = run_cli("value", "--book", str(files["book"]), "--market", str(files["market"]))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "delta_dollars" in result.stdout
+    # Short 10 of each by closed form, 30 days, 5%, 25%, 100 a contract at a spot of 100.
+    call = black_greeks(100.0, 100.0, 30 / 365, 0.05, 0.0, 0.25, 1).delta[0]
+    put = black_greeks(100.0, 95.0, 30 / 365, 0.05, 0.0, 0.25, -1).delta[0]
+    printed = next(
+        line.split(":")[1] for line in result.stdout.splitlines() if "delta_dollars:" in line
+    )
+    assert float(printed) == pytest.approx(-10 * 100 * (call + put) * 100.0, rel=1e-8)
     assert "--full" in result.stdout
 
 

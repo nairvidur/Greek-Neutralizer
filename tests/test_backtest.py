@@ -206,7 +206,7 @@ def test_policy_failures_are_recorded_not_hidden():
     result = run_backtest(rising_market(5), ShortStrangleBook(), Broken())
     assert len(result.failures) == 5
     assert sum(d.failures for d in result.days) == 4
-    with pytest.raises(MarketDataError):
+    with pytest.raises(MarketDataError, match="no quotes"):
         run_backtest(rising_market(5), ShortStrangleBook(), Broken(), fail_fast=True)
 
 
@@ -268,10 +268,9 @@ def test_long_put_overlay_opens_once_and_rolls():
 
     active = [(as_of, trades) for as_of, trades in log if trades]
     opening = active[0][1]
-    assert sorted(type(t.instrument).__name__ for t in opening) == [
-        "LinearInstrument",
-        "OptionContract",
-    ]
+    assert len(opening) == 2
+    assert sum(isinstance(t.instrument, LinearInstrument) for t in opening) == 1
+    assert sum(isinstance(t.instrument, OptionContract) for t in opening) == 1
     # Shares are bought once, whatever else happens.
     linear = [t for _, trades in log for t in trades if isinstance(t.instrument, LinearInstrument)]
     assert len(linear) == 1
@@ -355,7 +354,7 @@ def test_comparison_does_not_claim_a_difference_in_noise():
 
 
 def test_comparison_requires_same_days():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="same days"):
         compare(_fake("a", np.zeros(50)), _fake("b", np.zeros(60)))
 
 
@@ -364,7 +363,7 @@ def test_stats_and_drawdown():
     stats = policy_stats(_fake("x", np.arange(50.0) - 25.0))
     assert stats.days == 50
     assert stats.worst_day == -25.0
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="no days"):
         policy_stats(_fake("x", []))
 
 

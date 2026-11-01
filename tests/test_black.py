@@ -137,7 +137,7 @@ def test_cdf_matches_erfc_to_machine_precision():
 def test_rejects_invalid_inputs(bad):
     args = {"spot": 100.0, "strike": 100.0, "T": 1.0, "r": 0.0, "q": 0.0, "sigma": 0.2, "omega": 1}
     args.update(bad)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=r"omega|sigma|spot|time to expiry"):
         black_greeks(**args)
 
 

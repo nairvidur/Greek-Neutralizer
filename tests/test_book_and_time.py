@@ -143,15 +143,31 @@ def test_curve_interpolation_is_exact_at_nodes_and_flat_beyond():
     assert_allclose(curve.zero_rate(np.array([0.25, 1.0])), [0.04, 0.05])
     assert_allclose(curve.zero_rate(np.array([0.1, 5.0])), [0.04, 0.05])
     assert_allclose(curve.discount(np.array([1.0])), [np.exp(-0.05)])
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="strictly increasing"):
         DiscountCurve((1.0, 0.5), (0.04, 0.05))
 
 
 def test_snapshot_fingerprint_detects_any_change():
     a = flat_snapshot()
     assert a.fingerprint() == flat_snapshot().fingerprint()
-    assert a.fingerprint() != flat_snapshot(spot=100.01).fingerprint()
-    assert a.fingerprint() != flat_snapshot(vol=0.2501).fingerprint()
+    dividend = (CashDividend(AS_OF + timedelta(days=10), 1.0),)
+    changed = {
+        "spot": flat_snapshot(spot=100.01),
+        "vol": flat_snapshot(vol=0.2501),
+        "rate": flat_snapshot(rate=0.0501),
+        "carry": flat_snapshot(carry=0.0001),
+        "dividends": a.replaced("XYZ", dividends=dividend),
+        "dividend amount": a.replaced(
+            "XYZ", dividends=(CashDividend(AS_OF + timedelta(days=10), 1.01),)
+        ),
+        "curve times": a.replaced("XYZ", curve=DiscountCurve((2.0,), (0.05,))),
+        "clock": a.replaced("XYZ", clock=VarianceClock(session_weight=2.0)),
+        "as_of": MarketSnapshot(AS_OF + timedelta(seconds=1), dict(a.underlyings)),
+    }
+    prints = {a.fingerprint()}
+    for name, snapshot in changed.items():
+        assert snapshot.fingerprint() not in prints, name
+        prints.add(snapshot.fingerprint())
 
 
 def test_naive_datetimes_rejected():

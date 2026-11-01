@@ -103,9 +103,18 @@ def test_sticky_strike_and_moneyness_differ_only_with_a_smile():
 
 
 def test_stress_library_contains_required_events_and_short_gamma_loses():
-    names = " ".join(s.name for s in HISTORICAL_STRESSES)
-    for year in ("1987", "2008", "2015-08-24", "2018-02-05", "2020-03", "2024-08-05"):
-        assert year in names
+    # From the table in docs/risk/stress.md: spot move, and VIX points as a vol shock.
+    documented = {
+        "1987-10-19": (-0.2047, 0.60),
+        "2008-09-29": (-0.0879, 0.1198),
+        "2008-10-15": (-0.0903, 0.1412),
+        "2015-08-24": (-0.0394, 0.1271),
+        "2018-02-05": (-0.0410, 0.2001),
+        "2020-03-16": (-0.1198, 0.2486),
+        "2024-08-05": (-0.0300, 0.1518),
+    }
+    shocks = {s.name[:10]: (s.spot_shock, s.vol_shock) for s in HISTORICAL_STRESSES}
+    assert shocks == documented
     book = [Position(euro("put", 95, 30), -10)]
     assert np.all(book_scenario_pnl(book, flat_snapshot(), HISTORICAL_STRESSES) < 0.0)
 
@@ -138,7 +147,7 @@ def test_taylor_error_grows_with_shock_size():
     "bad", [{"spot_shock": -1.0}, {"days_forward": -1.0}, {"vol_shock": np.nan}]
 )
 def test_invalid_scenarios_rejected(bad):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="scenario bad"):
         Scenario("bad", **bad)
 
 

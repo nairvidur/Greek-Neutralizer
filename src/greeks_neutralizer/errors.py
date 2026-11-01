@@ -11,6 +11,11 @@ class ValidationError(GNError, ValueError):
     """An input violates a domain invariant (bad sign, NaN, naive datetime, unknown enum)."""
 
 
+class SolverRangeError(ValidationError):
+    """The inputs are past what the solver can represent faithfully, so nothing it says could be
+    trusted. This says nothing about whether a hedge exists."""
+
+
 class MarketDataError(GNError):
     """Market data is missing or unusable. The engine fails closed rather than guessing."""
 

@@ -28,7 +28,7 @@ from greeks_neutralizer.hedging.diagnostics import (
     hedge_frontier,
     whalley_wilmott_band,
 )
-from greeks_neutralizer.hedging.optimizer import solve_hedge
+from greeks_neutralizer.hedging.optimizer import VerificationError, solve_hedge
 from greeks_neutralizer.hedging.problem import (
     GreekName,
     GreekTarget,
@@ -36,6 +36,7 @@ from greeks_neutralizer.hedging.problem import (
     HedgeConfig,
     HedgeProblem,
     ProposalStatus,
+    VerificationReport,
 )
 from greeks_neutralizer.pricing.black import black_greeks
 from greeks_neutralizer.pricing.book import value_book
@@ -180,7 +181,7 @@ def test_hard_band_is_met_and_verified():
 def test_infeasible_band_names_the_binding_constraint():
     targets = (GreekTarget("XYZ", GreekName.VEGA, lower=-1.0, upper=1.0),)
     candidates = (stock_candidate(),)  # stock has no vega, so vega cannot be hedged
-    with pytest.raises(HedgeInfeasibleError) as err:
+    with pytest.raises(HedgeInfeasibleError, match="hard constraints") as err:
         solve(candidates=candidates, targets=targets)
     assert any("vega_1pt" in text for text in err.value.binding)
 
@@ -340,7 +341,7 @@ def test_hitting_the_wall_clock_backstop_is_reported(monkeypatch):
 
 
 def test_node_limit_must_be_positive():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="at least 1"):
         HedgeConfig(mip_node_limit=0)
 
 
@@ -493,8 +494,14 @@ def test_expired_candidate_excluded():
     assert any(item.reason == "expired" for item in p.excluded)
 
 
-def test_verification_runs_on_every_proposal():
+def test_a_proposal_failing_verification_raises_rather_than_returning(monkeypatch):
+    # The documented rule: it raises rather than returning a bad plan. Verification itself is
+    # replaced at its boundary, since a working solver has nothing for it to catch.
     assert solve().verification.passed
+    failed = VerificationReport(False, 1.0, 1.0, ("planted",))
+    monkeypatch.setattr(optimizer, "verify_proposal", lambda *args: failed)
+    with pytest.raises(VerificationError, match="planted"):
+        solve()
 
 
 def test_cvar_objective_improves_worst_tail():
@@ -726,9 +733,9 @@ def test_properties_of_every_proposal(qty, strike, days, aversion):
 def test_empty_problem_rejected():
     from greeks_neutralizer.errors import ValidationError
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="needs targets"):
         HedgeProblem(BOOK, CANDIDATES, ())
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="requires scenarios"):
         HedgeProblem(BOOK, CANDIDATES, DGV, (), HedgeConfig(cvar_weight=1.0))
 
 

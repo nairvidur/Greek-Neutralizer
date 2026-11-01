@@ -123,11 +123,19 @@ def test_a_port_taken_before_the_bind_starts_again_on_a_new_one(
         taken.listen()
         taken_port = taken.getsockname()[1]
         real_free_port = load_test.free_port
-        ports = iter([taken_port])
-        monkeypatch.setattr(load_test, "free_port", lambda: next(ports, None) or real_free_port())
+        given: list[int] = []
+
+        def first_the_taken_one() -> int:
+            given.append(real_free_port() if given else taken_port)
+            return given[-1]
+
+        monkeypatch.setattr(load_test, "free_port", first_the_taken_one)
         with load_test.running_service(tmp_path / "audit.jsonl") as base:
-            assert not base.endswith(f":{taken_port}")
             assert httpx2.get(f"{base}/healthz", timeout=10.0).status_code == 200
+            # It tried the taken port, failed to bind, and came up on the next one.
+            assert len(given) == 2
+            assert given[0] == taken_port
+            assert base.endswith(f":{given[1]}")
 
 
 def test_load_test_accounts_for_every_action(tmp_path: Path) -> None:

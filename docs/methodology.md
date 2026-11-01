@@ -72,7 +72,9 @@ CVaR uses the Rockafellar-Uryasev linearization over full-revaluation scenarios,
 Every contract-sized leg has a hard cap, `max_lots_per_leg`, regardless of the objective.
 
 Before any of this, candidate quotes are compared with the model.
-A delta-one quote is compared with what the market implies instead: spot times its delta ratio, or the forward for a future, using the market's own carry.
+A stock or future quote is compared with what the market implies instead: spot times its delta ratio, or the forward for a future, using the market's own carry.
+A proxy skips this, because it has no market reference: a leveraged fund at 200 with a delta ratio of 0.1 on a spot of 6000 is correctly priced, and its price says nothing about its exposure.
+A proposal using a proxy carries a `QUOTE_UNCHECKED` issue naming it, so the approver knows.
 Its mid must be within 25% of that, or the candidate is excluded with the reason, and with nothing else usable the status is `no_usable_candidates`.
 The 25% is judgment, not measurement.
 It has to catch a wrong spot, a stale or wrong-symbol quote, or a unit mistake, such as a stock at 200 or 10 against a spot of 100, while a correct quote must never trip it.

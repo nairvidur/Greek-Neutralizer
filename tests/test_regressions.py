@@ -21,9 +21,9 @@ from tests.conftest import AS_OF, euro, expiry_in, flat_snapshot
 
 
 def test_nan_vol_cannot_enter_the_system():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="finite"):
         FlatVol(float("nan"))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="NaN or inf"):
         black_greeks(100.0, 100.0, 0.25, 0.05, 0.0, float("nan"), 1)
 
 
@@ -45,15 +45,15 @@ def test_nan_from_a_surface_fails_closed():
 
 @pytest.mark.parametrize("right", ["CALL", "c", "", None])
 def test_unknown_option_right_rejected(right):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="OptionRight"):
         OptionContract("XYZ", right, 100.0, expiry_in(30))
 
 
 def test_sign_lives_only_in_quantity_so_side_cannot_disagree():
     assert Position(euro("call", 100, 30), -5).quantity == -5
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="signed int"):
         Position(euro("call", 100, 30), 1.5)  # type: ignore[arg-type]
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="signed int"):
         Position(euro("call", 100, 30), True)
 
 
