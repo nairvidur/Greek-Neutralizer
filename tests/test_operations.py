@@ -165,3 +165,30 @@ def test_load_test_accounts_for_every_action(tmp_path: Path) -> None:
     # Latency at a fixed rate runs from the schedule, so its count is what the schedule implies.
     assert result["fixed_rate_hedge"][0]["requests"] == 2
     assert code == 0
+
+
+def test_open_loop_throughput_falls_below_the_offered_rate_when_saturated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Oracle: a server that handles one request at a time, taking 50 ms each, completes at most
+    20 a second. Offered 50 a second for 0.4 s, the measured throughput must show that limit.
+    Dividing by the nominal duration reported exactly the offered rate, 50, whatever happened."""
+    import threading
+    import time
+
+    load_test = _script(monkeypatch, "load_test")
+    server = threading.Lock()
+
+    class Done:
+        status_code = 200
+
+    def send(_: object) -> Done:
+        with server:
+            time.sleep(0.05)
+        return Done()
+
+    result = load_test.open_loop("http://127.0.0.1:9", send, rate=50.0, seconds=0.4)
+    assert result["requests"] == 20
+    assert result["offered_per_second"] == 50.0
+    assert result["throughput_per_second"] < 21.0
+    assert result["throughput_per_second"] > 10.0
