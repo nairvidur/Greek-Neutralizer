@@ -373,3 +373,38 @@ def test_stress_days_reads_requested_dates_only():
     rows = stress_days([result], wanted)
     assert len(rows) == 1
     assert rows[0].pnl_by_policy["x"] == 2.0
+
+
+def test_warmup_trim_drops_only_failures_that_cannot_touch_measured_days():
+    """Oracle, from the engine's accounting: P&L day i is the market day after the decision
+    that drives it, so with a warm-up of w P&L days the first kept decision is market day w.
+    A failure before that is warm-up; one on or after it is measured, including the final day.
+    Previously every failure was kept, so a warm-up failure counted against measured days."""
+    fail_on = {1, 2, 49}
+
+    class FailsOn:
+        name = "fails_on"
+
+        def __init__(self):
+            self.index = -1
+
+        def trades(self, day, book, hedges):
+            self.index += 1
+            if self.index in fail_on:
+                raise MarketDataError(f"no quotes on market day {self.index}")
+            return ()
+
+    market = list(rising_market(50))
+    result = run_backtest(market, ShortStrangleBook(), FailsOn())
+    assert len(result.failures) == 3
+    trimmed = result.after_warmup(2)
+    assert [d.as_of for d in trimmed.days] == [m.as_of for m in market[3:]]
+    assert trimmed.failure_dates == [market[2].as_of, market[49].as_of]
+    assert policy_stats(trimmed).failed_days == 2
+    assert sum(d.failures for d in trimmed.days) == 1
+    assert result.after_warmup(0).failures == result.failures
+    with pytest.raises(ValidationError):
+        result.after_warmup(50)
+    undated = BacktestResult("undated", result.days, ["x"])
+    with pytest.raises(ValidationError, match="not dated"):
+        undated.after_warmup(1)
