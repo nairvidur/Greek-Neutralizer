@@ -108,6 +108,8 @@ Attribution decomposes P&L by start-of-period Greeks, and unexplained P&L is the
 ## Backtesting
 
 Decisions at day t see only day t's market, which is structural and tested.
-Trades pay half the spread plus fees, marks are at mid, and each policy finances its own marked value.
-Comparisons use a circular block bootstrap of 20 days, so clustered days are resampled together.
+Trades pay half the spread plus fees, and each policy finances its own marked value.
+Marks are at mid: an option's observed mid where the market quotes it, as a historical chain does, and the model's otherwise, and each period counts the option positions marked from the model.
+An optimizer solve that stops at the wall-clock backstop is recorded as a failed day rather than traded, so results do not depend on machine load.
+Comparisons use a circular block bootstrap of 20 periods, so clustered periods are resampled together.
 All variants are declared before running and are all reported.

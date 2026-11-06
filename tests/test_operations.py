@@ -215,8 +215,15 @@ def test_chain_fetch_over_a_holiday_finishes_and_does_not_retry_it(
     is transient and must still fail the run and leave the day to be retried."""
     fetch = _script(monkeypatch, "fetch_dolthub_chains")
     chain_row = {
-        "date": "x", "expiration": "2020-05-15", "strike": "250", "call_put": "Call",
-        "bid": "1", "ask": "2", "vol": "0.3", "delta": "0.5", "gamma": "0.01",
+        "date": "x",
+        "expiration": "2020-05-15",
+        "strike": "250",
+        "call_put": "Call",
+        "bid": "1",
+        "ask": "2",
+        "vol": "0.3",
+        "delta": "0.5",
+        "gamma": "0.01",
     }
     calls: list[str] = []
     broken: set[str] = set()
@@ -246,7 +253,9 @@ def test_chain_fetch_over_a_holiday_finishes_and_does_not_retry_it(
     assert run("2020-04-08", "2020-04-10") == 0
     folder = tmp_path / "chains" / "SPY"
     assert sorted(p.name for p in folder.iterdir()) == [
-        "2020-04-08.none", "2020-04-09.csv", "2020-04-10.noclose",
+        "2020-04-08.none",
+        "2020-04-09.csv",
+        "2020-04-10.noclose",
     ]
     assert "kept out: 2020-04-10" in capsys.readouterr().out
 
