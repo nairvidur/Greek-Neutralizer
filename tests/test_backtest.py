@@ -10,7 +10,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from greeks_neutralizer.backtest.engine import BacktestResult, DayMarket, DayResult, run_backtest
-from greeks_neutralizer.backtest.policies import DeltaBand, DeltaDaily, OptimizerPolicy, Unhedged
+from greeks_neutralizer.backtest.policies import (
+    DeltaBand,
+    DeltaDaily,
+    OptimizerPolicy,
+    Unhedged,
+    registered_policy,
+)
 from greeks_neutralizer.backtest.proxy import (
     HistoryRow,
     LongPutOverlayBook,
@@ -408,3 +414,34 @@ def test_warmup_trim_drops_only_failures_that_cannot_touch_measured_days():
     undated = BacktestResult("undated", result.days, ["x"])
     with pytest.raises(ValidationError, match="not dated"):
         undated.after_warmup(1)
+
+
+def test_time_limited_solve_is_a_failed_day_not_a_hedge(monkeypatch):
+    """A solve that stopped at the wall-clock backstop depends on machine load, which made an
+    early chain run irreproducible. The policy must refuse it, so the day is recorded as failed.
+    Oracle: the optimizer's documented SOLVER_TIME_LIMIT issue."""
+    from types import SimpleNamespace
+
+    from greeks_neutralizer.backtest import policies
+    from greeks_neutralizer.errors import SearchLimitError
+
+    day = next(iter(rising_market(3)))
+    timed_out = SimpleNamespace(
+        legs=(), issues=("SOLVER_TIME_LIMIT the search stopped at the 30s backstop",)
+    )
+    monkeypatch.setattr(policies, "solve_hedge", lambda problem, snapshot: timed_out)
+    policy = policies.registered_policy("opt_dgv", "SPX")
+    with pytest.raises(SearchLimitError, match="backstop"):
+        policy.trades(day, [], [])
+
+
+def test_registered_optimizers_are_bounded_by_nodes_not_the_clock():
+    """The registered search stops at a node count. The clock is only a backstop, set far above
+    any solve here, so the same data and code give the same result on a loaded machine."""
+    from greeks_neutralizer.backtest.policies import REGISTERED_POLICIES, OptimizerPolicy
+
+    for name in REGISTERED_POLICIES:
+        policy = registered_policy(name, "SPX")
+        if isinstance(policy, OptimizerPolicy):
+            assert policy.config.mip_node_limit == 300
+            assert policy.config.time_limit_seconds >= 600.0

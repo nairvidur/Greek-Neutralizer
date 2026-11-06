@@ -92,6 +92,10 @@ class DayResult:
     # that came from the model. Times the variance of a model mark's error per unit, it is the
     # P&L variance that mark errors alone add to this period, if those errors are independent.
     modeled_units_sq: float = 0.0
+    # The option part of the hedge trades: contracts traded, and their cost within hedge_cost.
+    # hedge_lots counts every unit traded, so it adds shares to contracts.
+    hedge_option_contracts: int = 0
+    hedge_option_cost: float = 0.0
 
 
 @dataclass(slots=True)
@@ -235,6 +239,8 @@ def run_backtest(
     pending_book_cost = 0.0
     pending_hedge_cost = 0.0
     pending_lots = 0
+    pending_option_contracts = 0
+    pending_option_cost = 0.0
     pending_failures = 0
 
     for day in market:
@@ -282,6 +288,8 @@ def run_backtest(
                     hedge_cost=pending_hedge_cost,
                     book_cost=pending_book_cost,
                     hedge_lots=pending_lots,
+                    hedge_option_contracts=pending_option_contracts,
+                    hedge_option_cost=pending_option_cost,
                     failures=pending_failures,
                     carry_income=income,
                     model_marked=len(modeled) if day.observed_mid is not None else 0,
@@ -303,8 +311,15 @@ def run_backtest(
                 for t in policy.trades(day, list(book.values()), list(hedges.values()))
                 if t.quantity != 0
             ]
-            pending_hedge_cost = _trade_cost(day, hedge_trades)
+            # Each trade is quoted once, so a market that counts its quotes sees each trade once.
+            costs = [_trade_cost(day, (t,)) for t in hedge_trades]
+            is_option = [isinstance(t.instrument, OptionContract) for t in hedge_trades]
+            pending_hedge_cost = sum(costs)
             pending_lots = sum(abs(t.quantity) for t in hedge_trades)
+            pending_option_contracts = sum(
+                abs(t.quantity) for t, opt in zip(hedge_trades, is_option, strict=True) if opt
+            )
+            pending_option_cost = sum(c for c, opt in zip(costs, is_option, strict=True) if opt)
             _merge(hedges, hedge_trades)
         except GNError as exc:
             # Expected failures to hedge. A programming error still raises, rather than being
@@ -313,6 +328,8 @@ def run_backtest(
                 raise
             pending_hedge_cost = 0.0
             pending_lots = 0
+            pending_option_contracts = 0
+            pending_option_cost = 0.0
             pending_failures = 1
             result.failures.append(f"{day.as_of.date()}: {type(exc).__name__}: {exc}")
             result.failure_dates.append(day.as_of)

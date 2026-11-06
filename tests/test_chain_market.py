@@ -188,6 +188,14 @@ def test_registered_optimizer_hedges_on_a_real_chain_day(chain_files):
     )
     assert result.failures == []
     assert sum(d.hedge_lots for d in result.days) > 0
+    # The option part is split out of the totals: contracts within lots, cost within cost.
+    for d in result.days:
+        assert 0 <= d.hedge_option_contracts <= d.hedge_lots
+        assert 0.0 <= d.hedge_option_cost <= d.hedge_cost + 1e-9
+    # Oracle for the cost: a contract quoted that day pays half its quoted spread plus the fee.
+    traded = [d for d in result.days if d.hedge_option_contracts]
+    assert traded
+    assert all(d.hedge_option_cost >= 0.5 * d.hedge_option_contracts for d in traded)
 
 
 def test_engine_marks_at_observed_mids_when_given():

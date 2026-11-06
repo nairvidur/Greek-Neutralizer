@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from greeks_neutralizer.backtest.engine import DayMarket, HedgePolicy
 from greeks_neutralizer.domain import LinearInstrument, Position
+from greeks_neutralizer.errors import SearchLimitError
 from greeks_neutralizer.hedging.diagnostics import whalley_wilmott_band
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.hedging.problem import (
@@ -118,6 +119,11 @@ class OptimizerPolicy:
             self.config,
         )
         proposal = solve_hedge(problem, day.snapshot)
+        timed_out = [i for i in proposal.issues if i.startswith("SOLVER_TIME_LIMIT")]
+        if timed_out:
+            # Its hedge depends on how loaded the machine was, so trading it would make the
+            # backtest irreproducible. The day is recorded as failed instead.
+            raise SearchLimitError(timed_out[0])
         return tuple(Position(leg.instrument, leg.quantity) for leg in proposal.legs)
 
 
@@ -140,6 +146,12 @@ REGISTERED_POLICIES = (
 )
 
 
+# The search stops at HedgeConfig's node limit, which is deterministic. The clock is only a
+# backstop, set far above any solve here so that it never binds on a loaded machine. At the
+# default 30s it did bind on a starved machine, and changed an early chain run's results.
+_BACKTEST_TIME_LIMIT_SECONDS = 600.0
+
+
 def _registered_config(risk_aversion: float, cvar_weight: float = 0.0) -> HedgeConfig:
     return HedgeConfig(
         risk_aversion=risk_aversion,
@@ -147,6 +159,7 @@ def _registered_config(risk_aversion: float, cvar_weight: float = 0.0) -> HedgeC
         cvar_alpha=0.8,
         mip_gap=1e-2,
         max_legs=6,
+        time_limit_seconds=_BACKTEST_TIME_LIMIT_SECONDS,
     )
 
 

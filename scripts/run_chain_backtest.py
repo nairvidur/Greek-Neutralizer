@@ -15,6 +15,7 @@ Option bid and ask are real, so a spread multiple of 1 is the quoted spread, and
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import multiprocessing as mp
 import time
@@ -177,6 +178,50 @@ def model_marked_share(result: BacktestResult) -> float:
     return sum(d.model_marked for d in result.days) / held if held else 0.0
 
 
+def select_variants(spec: str | None) -> tuple[Variant, ...]:
+    if not spec:
+        return VARIANTS
+    wanted = []
+    for item in spec.split(","):
+        book, policy, multiple = item.split(":")
+        variant = Variant(book, policy, float(multiple))
+        if variant not in VARIANTS:
+            raise SystemExit(f"not a registered variant: {item}")
+        wanted.append(variant)
+    return tuple(wanted)
+
+
+SERIES_COLUMNS = (
+    "as_of",
+    "pnl",
+    "book_pnl",
+    "hedge_pnl",
+    "financing",
+    "carry_income",
+    "hedge_cost",
+    "hedge_option_cost",
+    "book_cost",
+    "hedge_option_contracts",
+    "hedge_lots",
+    "model_marked",
+    "option_positions",
+    "modeled_units_sq",
+)
+
+
+def write_series(folder: Path, outcome: Outcome) -> None:
+    v = outcome.variant
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{v.book}__{v.policy}__{v.spread_multiple:g}.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(SERIES_COLUMNS)
+        for day in outcome.result.days:
+            writer.writerow(
+                [day.as_of.date().isoformat(), *(getattr(day, c) for c in SERIES_COLUMNS[1:])]
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("chains", type=Path)
@@ -184,6 +229,16 @@ def main() -> None:
     parser.add_argument("rates", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--processes", type=int, default=8)
+    parser.add_argument(
+        "--series",
+        type=Path,
+        help="Also write each variant's per-period results to this directory, as CSV",
+    )
+    parser.add_argument(
+        "--variants",
+        help="Run only these, as book:policy:multiple separated by commas. For reruns and "
+        "diagnostics; the registered result is the full set",
+    )
     args = parser.parse_args()
 
     files = tuple(sorted(args.chains.glob("*.csv")))
@@ -192,9 +247,10 @@ def main() -> None:
     inputs = Inputs(files, load_fred_series(args.rates), load_dividends(args.dividends))
     print(f"{len(files)} chain days, {files[0].stem} to {files[-1].stem}", flush=True)
 
+    selected = select_variants(args.variants)
     outcomes: list[Outcome] = []
     with mp.Pool(args.processes) as pool:
-        for outcome in pool.imap_unordered(_run, [(v, inputs) for v in VARIANTS]):
+        for outcome in pool.imap_unordered(_run, [(v, inputs) for v in selected]):
             print(
                 f"{outcome.variant} {outcome.seconds:.0f}s days={len(outcome.result.days)} "
                 f"failures={len(outcome.result.failures)} skipped={len(outcome.skipped)} "
@@ -253,6 +309,7 @@ def main() -> None:
             "expiry_held_out": expiry_errors,
         },
         "n_variants": len(VARIANTS),
+        "variants_run": len(selected),
         "bootstrap_block": BOOTSTRAP_BLOCK,
         "groups": [],
     }
@@ -300,6 +357,9 @@ def main() -> None:
                 },
             }
         )
+    if args.series is not None:
+        for outcome in outcomes:
+            write_series(args.series, outcome)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(output, indent=2) + "\n")
     print(f"wrote {args.out}", flush=True)
