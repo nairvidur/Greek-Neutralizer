@@ -127,7 +127,8 @@ def main() -> None:
     parser.add_argument(
         "--weekdays",
         default="0,1,2,3,4",
-        help="Monday is 0. The source mostly samples Mon, Wed, and Fri, so 0,2,4 gets most days",
+        help="Monday is 0. The source mostly samples Mon, Wed, and Fri, so 0,2,4 gets most "
+        "days. The registered run probed every weekday, the default",
     )
     args = parser.parse_args()
     symbol = args.symbol.upper()

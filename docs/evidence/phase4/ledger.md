@@ -72,7 +72,7 @@ Tuesdays and Thursdays were added when samples showed the source has some in lat
 | Quote size | 500 contracts a side, since the source has none | Assumed, same as the proxy |
 | Dividends | The last amount paid, projected onto quarterly third Fridays | No amount is read before it is paid |
 | Warm-up | None, since the chain market has no trailing state | |
-| Stress days | 2020-03-16 and 2024-08-05, the proxy's dates inside this period | Fixed in advance |
+| Stress days | 2020-03-16 and 2024-08-05, the proxy's dates inside this period | Fixed in advance. The source has no chain on 2024-08-05, or on any weekday from 2024-07-30 to 2024-08-09, so no period ends on it; the README reports the period that spans it |
 | Bootstrap block | 20 observations, about seven weeks at three a week | |
 
 Gate decision, fixed in advance as the proxy README states it: **go** if option-hedge variance and tail reduction against daily delta clear zero at quoted spreads, and **no-go, fix the model** if they do not.

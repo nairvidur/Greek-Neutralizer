@@ -236,8 +236,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--variants",
-        help="Run only these, as book:policy:multiple separated by commas. For reruns and "
-        "diagnostics; the registered result is the full set",
+        help="Run only these, as book:policy:multiple separated by commas. For diagnostics "
+        "only: the registered result is the full 16-variant run, and a subset run records "
+        "how many ran in variants_run",
     )
     args = parser.parse_args()
 

@@ -57,10 +57,32 @@ Against daily delta, with 95% block-bootstrap intervals:
 | Delta, no-trade band | -14.5% (-59.8 to +7.9) | -$3,911 (-8,854 to +755) | -$20 (-292 to +253) |
 
 At three times the quoted spreads the picture is the same, with costs higher still: `chain_backtest.json` has every variant.
+At 3x the widened bid is floored at zero, so cheap wing quotes are charged less than three times their half-spread.
+That makes the 3x costs of the option hedges a lower bound, which flatters them.
+It cannot change the no-go, which is decided at quoted spreads.
 
 **The one place the option hedges did what they are for is the crash.**
 On the period ending 2020-03-16 the strangle lost $209,329 unhedged and $59,031 delta hedged, while the delta, gamma, and vega optimizer lost $1,850 and the CVaR variant made $11,355.
-That is one pre-registered stress date, so it is an observation, not a result.
+That is one of the two pre-registered stress dates, so it is an observation, not a result.
+
+The other, 2024-08-05, has no period of its own: the source has no SPY chain on any weekday from 2024-07-30 to 2024-08-09, so no period ends on it and `stress_days` in `chain_backtest.json` omits it.
+It is not one of the 34 skipped days; it is a gap in the source.
+As a stand-in, this is the period that spans it, from 2024-07-29 to 2024-08-12, about two weeks, in dollars at quoted spreads.
+It is one two-week period, so it is an observation, not a result.
+
+| Book | Policy | P&L, 2024-07-29 to 2024-08-12 |
+|---|---|---:|
+| Short strangle | Unhedged | -47,833 |
+| Short strangle | Delta, daily | +7,996 |
+| Short strangle | Delta, no-trade band | -5,405 |
+| Short strangle | Optimizer, delta and gamma | -89,045 |
+| Short strangle | Optimizer, delta, gamma, vega | +284,866 |
+| Short strangle | Same, lower risk aversion | +193,438 |
+| Short strangle | Same, with CVaR | +105,311 |
+| Long put overlay | Unhedged | -1,225,578 |
+| Long put overlay | Delta, daily | -246,079 |
+| Long put overlay | Optimizer, delta, gamma, vega | -207,567 |
+| Long put overlay | Same, lower risk aversion | -130,955 |
 
 The long put overlay is reported because it was pre-registered, though, as in the proxy, it is a poor test.
 There the lower-risk-aversion optimizer did reduce variance against delta, by 48% (2 to 66), with no established difference in tail or mean P&L, while the higher-risk-aversion one did not, at 25% (-84 to +68).
@@ -75,7 +97,7 @@ The source quotes strikes on a grid that moves with spot, so a contract held tod
 On a full listed chain some of that churn would go, but the policy has no penalty for holding many small legs, and it rebalances every period.
 
 **Marks are mostly from the model, and their error is measured.**
-The source quotes the same contract on the next day only 8% of the time, so in 98.5% of periods a held option position had at least one of its two marks from that day's calibrated surface.
+The source quotes the same contract on the next day only 8% of the time, so 98.5% of held option positions, counted period by period, had at least one of their two marks from that day's calibrated surface.
 A held-out audit over 230 days put the error of those marks at an RMS of $0.08 a share when the expiry was quoted but the strike was not, and $0.20 when the expiry was missing, against a median quoted half-spread of $0.005 to $0.01.
 On the hundreds of option contracts the optimizer trades each period, errors of that size add P&L noise that real mids would not.
 Treating each mark's error as independent puts that noise at 12% to over 100% of the optimizer's variance, depending on which error level applies, so that estimate cannot settle it.
@@ -127,6 +149,9 @@ uv run python scripts/analyze_chain_series.py series/ --out horizons.json
 ```
 
 The download takes about an hour, since each day needs its own query.
+The registered run probed every weekday, which is the fetch script's default.
+Only the full 16-variant run is the registered result.
+`--variants` runs a subset for diagnostics, and its results file records how many ran in `variants_run`.
 The full run takes several hours on 8 processes, most of it in the optimizer variants.
 DoltHub and FRED can revise their data, so a later download can differ.
 

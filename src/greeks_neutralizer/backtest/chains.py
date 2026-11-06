@@ -406,6 +406,8 @@ class ChainMarket:
         return MarkAudit(chain.day, score(strike_out), score(expiry_out))
 
     def _widened(self, quote: Quote) -> Quote:
+        # The bid floor at zero charges a cheap wing less than spread_multiple times its
+        # half-spread, so stressed option-hedge costs are a lower bound.
         if self.spread_multiple == 1.0:
             return quote
         half = 0.5 * (quote.ask - quote.bid) * self.spread_multiple
