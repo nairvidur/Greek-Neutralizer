@@ -14,8 +14,12 @@ underlying's close on that day.
 
 Writes <out_dir>/chains/<SYMBOL>/<date>.csv, one per chain day, with the day's close repeated in
 an `underlying_close` column so that a day is one file, and <out_dir>/<SYMBOL>_dividends.csv.
-A day with no chain gets an empty <date>.none marker. Existing day files and markers are kept,
-so an interrupted run resumes.
+A day with no chain gets an empty <date>.none marker. A day with a chain but no close gets an
+empty <date>.noclose marker: the options table has chains on some market holidays (2020-01-20,
+2020-04-10, 2020-05-25) when the stocks table, rightly, has no close, so a retry cannot succeed.
+Such a day is kept out of the data, since the reader would have no spot check, and is listed
+rather than counted as a failure. Existing day files and markers are kept, so an interrupted run
+resumes; only transport or API errors fail the run and are retried by rerunning.
 Each file is written to a temporary name and renamed, so a partial file never looks complete.
 Keep the output outside version control, like all vendor data here.
 """
@@ -93,8 +97,12 @@ def weekdays(start: date, end: date, weekday_set: frozenset[int]) -> list[date]:
     ]
 
 
-def fetch_day(symbol: str, day: date, target: Path) -> int:
-    """Rows written for the day, or 0 with an empty `.none` marker when it has no chain."""
+MARKERS = (".none", ".noclose")
+
+
+def fetch_day(symbol: str, day: date, target: Path) -> int | None:
+    """Rows written for the day; 0 with an empty `.none` marker when it has no chain; None with
+    an empty `.noclose` marker when it has a chain but the stocks table has no close for it."""
     rows = query(
         OPTIONS,
         f"SELECT {', '.join(CHAIN_COLUMNS)} FROM option_chain "
@@ -111,7 +119,8 @@ def fetch_day(symbol: str, day: date, target: Path) -> int:
     )
     if len(closes) != 1 or closes[0].get("close") in (None, ""):
         # Kept out rather than written without a close: the reader would have no spot check.
-        raise FetchError(f"{symbol} {day}: no close in {STOCKS}")
+        target.with_suffix(".noclose").touch()
+        return None
     close = closes[0]["close"]
     _write_atomic(target, DAY_COLUMNS, [{**row, "underlying_close": close} for row in rows])
     return len(rows)
@@ -151,10 +160,12 @@ def main() -> None:
     todo = [
         d
         for d in days
-        if not (folder / f"{d}.csv").exists() and not (folder / f"{d}.none").exists()
+        if not (folder / f"{d}.csv").exists()
+        and not any((folder / f"{d}{m}").exists() for m in MARKERS)
     ]
     print(f"{symbol}: {len(days)} candidate days, {len(todo)} to probe", flush=True)
     found = 0
+    no_close: list[date] = []
     failures: list[str] = []
     with ThreadPoolExecutor(max_workers=max(args.workers, 1)) as pool:
         futures = {d: pool.submit(fetch_day, symbol, d, folder / f"{d}.csv") for d in todo}
@@ -164,9 +175,15 @@ def main() -> None:
             except FetchError as exc:
                 failures.append(str(exc))
                 continue
-            found += count > 0
+            if count is None:
+                no_close.append(day)
+            else:
+                found += count > 0
             if index % 50 == 0 or index == len(todo):
                 print(f"{index}/{len(todo)} {day} chains_found={found}", flush=True)
+    if no_close:
+        listed = ", ".join(str(d) for d in no_close)
+        print(f"{len(no_close)} chain days have no close and are kept out: {listed}", flush=True)
     if failures:
         print(f"{len(failures)} days failed; rerun to retry them:", file=sys.stderr)
         for line in failures[:20]:

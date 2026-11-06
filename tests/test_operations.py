@@ -170,25 +170,90 @@ def test_load_test_accounts_for_every_action(tmp_path: Path) -> None:
 def test_open_loop_throughput_falls_below_the_offered_rate_when_saturated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Oracle: a server that handles one request at a time, taking 50 ms each, completes at most
-    20 a second. Offered 50 a second for 0.4 s, the measured throughput must show that limit.
-    Dividing by the nominal duration reported exactly the offered rate, 50, whatever happened."""
+    """Oracle: a server that handles one request at a time, taking at least 50 ms each, completes
+    at most 20 a second. Offered 50 a second for 0.4 s, the measured throughput must show that
+    limit. Dividing by the nominal duration reported exactly the offered rate, 50, whatever
+    happened. Sleeps can overrun on a loaded or timer-coalescing host, so the lower bound comes
+    from the service time the fake server actually spent, not from the nominal 50 ms."""
     import threading
     import time
 
     load_test = _script(monkeypatch, "load_test")
     server = threading.Lock()
+    busy: list[float] = []
 
     class Done:
         status_code = 200
 
     def send(_: object) -> Done:
         with server:
+            start = time.perf_counter()
             time.sleep(0.05)
+            busy.append(time.perf_counter() - start)
         return Done()
 
     result = load_test.open_loop("http://127.0.0.1:9", send, rate=50.0, seconds=0.4)
     assert result["requests"] == 20
     assert result["offered_per_second"] == 50.0
+    # One at a time, so the last completion is at least the total service time after the first
+    # start: no measurement can beat 20 / serial, and serial is at least 20 x 50 ms.
+    serial = sum(busy)
+    assert result["throughput_per_second"] <= 20 / serial * (1 + 1e-9)
     assert result["throughput_per_second"] < 21.0
-    assert result["throughput_per_second"] > 10.0
+    # Requests arrive every 20 ms and each takes 50 ms or more, so the server is never idle after
+    # the first: elapsed time is the service time plus small handoff and start-up overheads.
+    assert result["throughput_per_second"] > 20 / (serial + 0.5)
+
+
+def test_chain_fetch_over_a_holiday_finishes_and_does_not_retry_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Oracle: DoltHub's options table has SPY chains on market holidays (2020-04-10 is Good
+    Friday) while its stocks table has no close for them, a permanent fact of the source. A
+    full-history fetch must then exit cleanly, keep the day out of the data, and not probe it
+    again. The old fetcher raised on it, so every rerun exited 1. A transport error, by contrast,
+    is transient and must still fail the run and leave the day to be retried."""
+    fetch = _script(monkeypatch, "fetch_dolthub_chains")
+    chain_row = {
+        "date": "x", "expiration": "2020-05-15", "strike": "250", "call_put": "Call",
+        "bid": "1", "ask": "2", "vol": "0.3", "delta": "0.5", "gamma": "0.01",
+    }
+    calls: list[str] = []
+    broken: set[str] = set()
+
+    def query(repo: str, sql: str, **_: object) -> list[dict[str, str | None]]:
+        calls.append(sql)
+        if "dividend" in sql:
+            return [{"ex_date": "2020-03-20", "amount": "1.4"}]
+        day = sql.split("date = '")[1][:10]
+        if day in broken:
+            raise fetch.FetchError(f"{repo}: timed out")
+        if repo == fetch.OPTIONS:
+            return [] if day == "2020-04-08" else [dict(chain_row, date=day)]
+        return [] if day == "2020-04-10" else [{"close": "270"}]
+
+    monkeypatch.setattr(fetch, "query", query)
+
+    def run(*days: str) -> int:
+        argv = ["fetch", str(tmp_path), "--start", days[0], "--end", days[-1], "--workers", "1"]
+        monkeypatch.setattr(sys, "argv", argv)
+        try:
+            fetch.main()
+        except SystemExit as exc:
+            return int(exc.code or 0)
+        return 0
+
+    assert run("2020-04-08", "2020-04-10") == 0
+    folder = tmp_path / "chains" / "SPY"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "2020-04-08.none", "2020-04-09.csv", "2020-04-10.noclose",
+    ]
+    assert "kept out: 2020-04-10" in capsys.readouterr().out
+
+    calls.clear()
+    assert run("2020-04-08", "2020-04-10") == 0
+    assert [c for c in calls if "dividend" not in c] == []
+
+    broken.add("2020-04-13")
+    assert run("2020-04-13", "2020-04-13") == 1
+    assert not any(folder.glob("2020-04-13*"))
