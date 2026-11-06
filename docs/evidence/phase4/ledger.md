@@ -49,7 +49,51 @@ That movement, between runs of nominally equal quality, is a useful sense of how
 | Risk aversion | 1.0, and 0.2 for `cheap` | Judgment |
 | No-trade band | 0.5 bp cost, risk aversion 1e-6 | Judgment |
 
+## Historical-chain run, pre-registered
+
+Entered here before the first full run on real chains.
+
+Smoke runs over parts of 2020 were read while the market build was debugged, and three handling changes followed, each for a data reason and none for a P&L figure:
+
+- Spot comes from put-call parity rather than the close. With the close, 2020-03-16 and other fast days were skipped, because the source's chain snapshot and close are not simultaneous, and dropping the worst days would flatter every hedge.
+- Books and hedge grids prefer listed monthly expiries, as the proxy's do, because the source keeps a monthly in its sample for weeks, while its other expiries change every day.
+- A held-out mark audit and a mark-noise estimate were added, because the source almost never quotes the same contract twice, so most marks come from the calibrated surface.
+
+Tuesdays and Thursdays were added when samples showed the source has some in later years.
+
+| Item | Setting | Source |
+|---|---|---|
+| Data | SPY end-of-day option bid and ask, SPY closes and dividends, from DoltHub `post-no-preference/options` and `post-no-preference/stocks`; FRED DGS3MO for rates | Free, no account |
+| Period | Every chain day the source has from 2019-01-01 to 2026-10-31, probing every weekday | The source's sampling: mostly Monday, Wednesday, and Friday, with other days in later years |
+| Books | The proxy's two, at the same notional: short strangle of 100 SPY lots, and 100,000 SPY shares with a protective put | One SPX point is about ten SPY dollars |
+| Policies | The proxy's 16 variants, built by `registered_policy`, with no parameter changed | `backtest/policies.py` |
+| Spread multiples | 1, the quoted spread, and 3 as a stress | Same as the proxy |
+| Fees | $0.50 per option contract; the stock trades at $0.01 a side with no fee | Assumed |
+| Quote size | 500 contracts a side, since the source has none | Assumed, same as the proxy |
+| Dividends | The last amount paid, projected onto quarterly third Fridays | No amount is read before it is paid |
+| Warm-up | None, since the chain market has no trailing state | |
+| Stress days | 2020-03-16 and 2024-08-05, the proxy's dates inside this period | Fixed in advance. The source has no chain on 2024-08-05, or on any weekday from 2024-07-30 to 2024-08-09, so no period ends on it; the README reports the period that spans it |
+| Bootstrap block | 20 observations, about seven weeks at three a week | |
+
+Gate decision, fixed in advance as the proxy README states it: **go** if option-hedge variance and tail reduction against daily delta clear zero at quoted spreads, and **no-go, fix the model** if they do not.
+
+## Historical-chain runs
+
+| Run | Code | Outcome | Status |
+|---|---|---|---|
+| 1 | `9e27b7d` | All 16 variants completed. The machine was starved of CPU for hours, and solves hit the 30 second wall-clock backstop, which the backtest ignored | **Rejected: exposed a defect.** Results depended on machine load |
+| 2 | `9e27b7d` plus per-period series | The 11 variants at quoted spreads, partly on a loaded machine. One variant had a timed-out day, and optimizer results matched run 1 only where run 1 was not starved | Discarded as evidence; it showed run 1 was not reproducible |
+| 3 | `40a5b8c` | All 16 variants, with no failed days and no solve at the backstop. Every optimizer variant but `opt_dgv_cheap` at quoted spreads matches, to the dollar, run 1 or run 2 wherever that run had the machine to itself, and that one was load-affected in both | **Current:** `chain_backtest.json`, and `chain_horizons.json` from its series. Decision: no-go |
+
+## Changes between chain runs 1 and 3
+
+- The backtest policy refuses a solve that stopped at the wall-clock backstop, so that day is recorded as failed instead of traded.
+- The registered configs raise that backstop from 30 to 600 seconds, so the node limit governs, as these runs were designed to. The proxy evidence was made with the old backstop, and was not rerun. Its runs 5 and 6 gave identical values, which says the backstop did not bind there.
+- Each period records option contracts traded and their cost, and per-period series are written for the post-hoc horizon check.
+
+None of these was aimed at a result, and every variant was rerun.
+
 ## Promotion rule
 
 Nothing here is promoted to a recommended default.
-That needs a rerun on historical chains, then a paper pilot.
+The chain run gave no-go, so promotion now needs a fixed policy, entered here as a new pre-registered variant before it runs, then a paper pilot.

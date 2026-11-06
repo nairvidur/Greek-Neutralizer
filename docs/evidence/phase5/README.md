@@ -73,6 +73,10 @@ At a fixed arrival rate, timed from each request's scheduled start so that a sta
 | 4/s | 206 ms | 221 ms | 248 ms |
 | 8/s | 231 ms | 250 ms | 275 ms |
 
+Read these rows by their latency columns.
+In the committed `load_test.json`, `throughput_per_second` for the fixed-rate rows equals the offered rate by construction, because that run divided by the nominal duration.
+`scripts/load_test.py` now divides by the time the work actually took, so a later run shows throughput falling below the offered rate when the service falls behind.
+
 **Nothing was lost under load.**
 500 concurrent submissions all returned 201, and each was then raced by two approvers.
 Every race had exactly one 200 and one 409, and the log held exactly 500 `submitted` and 500 `approved` records, with its chain intact.

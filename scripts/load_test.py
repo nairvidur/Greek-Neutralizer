@@ -216,7 +216,11 @@ def open_loop(base: str, send: Sender, rate: float, seconds: float) -> dict[str,
     with ThreadPoolExecutor(min(count, 256)) as pool:
         for future in [pool.submit(one, index) for index in range(count)]:
             future.result()
-    return {"offered_per_second": rate, **summarize(latencies, statuses, seconds)}
+    # Throughput over the time the work actually took, from the first scheduled start to the last
+    # completion. Dividing by the nominal duration would always return the offered rate, so it
+    # could never show the service falling behind.
+    elapsed = time.perf_counter() - begin
+    return {"offered_per_second": rate, **summarize(latencies, statuses, elapsed)}
 
 
 def fresh_sample(base: str) -> dict[str, Any]:

@@ -11,8 +11,13 @@ value: its carry is already in the forward's roll. A shareholder receives the ca
 dividends that go ex in the period, and a short pays them. Without that, a stock hedge across an
 ex-date would book the price drop as profit.
 
-Trades pay half the bid/ask plus fees, with marks at mid. An option expiring by t+1 is marked at
-intrinsic in t+1's market and then removed, so settlement needs no separate cash path.
+Trades pay half the bid/ask plus fees. Marks come from the model, unless the market supplies an
+observed mid for an option, as a historical chain does: then that option is marked at its mid, so
+P&L is measured on market prices. Each period counts the option positions whose mark at either
+end came from the model, so a report can say how much of its P&L rests on the model.
+
+An option expiring by t+1 is marked at intrinsic in t+1's market and then removed, so settlement
+needs no separate cash path.
 """
 
 from __future__ import annotations
@@ -24,7 +29,13 @@ from typing import Protocol
 
 import numpy as np
 
-from greeks_neutralizer.domain import Instrument, LinearInstrument, LinearKind, Position
+from greeks_neutralizer.domain import (
+    Instrument,
+    LinearInstrument,
+    LinearKind,
+    OptionContract,
+    Position,
+)
 from greeks_neutralizer.errors import GNError, ValidationError
 from greeks_neutralizer.hedging.problem import HedgeCandidate
 from greeks_neutralizer.market import MarketSnapshot
@@ -39,6 +50,9 @@ class DayMarket:
     snapshot: MarketSnapshot
     candidates: tuple[HedgeCandidate, ...]
     quote_for: Callable[[Instrument], HedgeCandidate]
+    # The observed mid per unit of an option quoted that day, or None where it was not quoted.
+    # Left unset, every mark comes from the model.
+    observed_mid: Callable[[OptionContract], float | None] | None = None
 
 
 class BookStrategy(Protocol):
@@ -49,7 +63,9 @@ class BookStrategy(Protocol):
 
 
 class HedgePolicy(Protocol):
-    name: str
+    # Read-only, so immutable policies such as frozen dataclasses satisfy the protocol.
+    @property
+    def name(self) -> str: ...
 
     def trades(
         self, day: DayMarket, book: Sequence[Position], hedges: Sequence[Position]
@@ -68,6 +84,18 @@ class DayResult:
     hedge_lots: int
     failures: int
     carry_income: float = 0.0
+    # Option positions held over the period whose mark at either end came from the model, out of
+    # all option positions held over it. Both are 0 when the market supplies no observed mids.
+    model_marked: int = 0
+    option_positions: int = 0
+    # Sum over model-marked option positions of (units held)^2 times the number of its two marks
+    # that came from the model. Times the variance of a model mark's error per unit, it is the
+    # P&L variance that mark errors alone add to this period, if those errors are independent.
+    modeled_units_sq: float = 0.0
+    # The option part of the hedge trades: contracts traded, and their cost within hedge_cost.
+    # hedge_lots counts every unit traded, so it adds shares to contracts.
+    hedge_option_contracts: int = 0
+    hedge_option_cost: float = 0.0
 
 
 @dataclass(slots=True)
@@ -76,6 +104,43 @@ class BacktestResult:
     days: list[DayResult] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     final_day_cost: float = 0.0  # paid on the last day, with no later day to report it against
+    # The decision day of each entry in `failures`, in the same order.
+    failure_dates: list[datetime] = field(default_factory=list)
+
+    def after_warmup(self, warmup_days: int) -> BacktestResult:
+        """The result with the first `warmup_days` P&L days dropped.
+
+        A failure is kept only if it could affect a kept day: its decision day is on or after the
+        decision day of the first kept P&L day, which is the market day before it, that is, the
+        as_of of the last dropped day. Failures during the warm-up are dropped with it.
+        """
+        if warmup_days < 0:
+            raise ValidationError("warmup_days must be non-negative")
+        if len(self.failure_dates) != len(self.failures):
+            raise ValidationError(f"{self.policy}: failures are not dated, so cannot be trimmed")
+        if warmup_days == 0:
+            return BacktestResult(
+                self.policy,
+                list(self.days),
+                list(self.failures),
+                self.final_day_cost,
+                list(self.failure_dates),
+            )
+        if warmup_days > len(self.days):
+            raise ValidationError(
+                f"{self.policy}: warm-up of {warmup_days} days exceeds {len(self.days)} days"
+            )
+        cutoff = self.days[warmup_days - 1].as_of
+        kept = [
+            (m, d) for m, d in zip(self.failures, self.failure_dates, strict=True) if d >= cutoff
+        ]
+        return BacktestResult(
+            self.policy,
+            self.days[warmup_days:],
+            [m for m, _ in kept],
+            self.final_day_cost,
+            [d for _, d in kept],
+        )
 
     def pnl(self) -> FloatArray:
         return np.array([d.pnl for d in self.days], dtype=np.float64)
@@ -110,18 +175,39 @@ def _trade_cost(day: DayMarket, trades: Iterable[Position]) -> float:
     return total
 
 
-def _value(holdings: Mapping[str, Position], snapshot: MarketSnapshot) -> dict[str, float]:
-    """Mark of each position, by key. Marks use the model; a real source can supply mids."""
+@dataclass(frozen=True, slots=True)
+class _Marks:
+    values: dict[str, float]
+    # Keys of option positions marked by the model although the market supplies observed mids.
+    modeled: frozenset[str]
+
+
+def _value(holdings: Mapping[str, Position], day: DayMarket) -> _Marks:
+    """Mark of each position, by key: the observed mid where there is one, else the model."""
     positions = list(holdings.values())
     if not positions:
-        return {}
-    book = value_book(positions, snapshot)
-    return {
+        return _Marks({}, frozenset())
+    book = value_book(positions, day.snapshot)
+    values = {
         line.position.instrument.key: mark_value(
             line.position, line.unit_price, line.exposure.value
         )
         for line in book.lines
     }
+    modeled: set[str] = set()
+    if day.observed_mid is not None:
+        for key, position in holdings.items():
+            instrument = position.instrument
+            if not isinstance(instrument, OptionContract):
+                continue
+            mid = None if instrument.expiry <= day.as_of else day.observed_mid(instrument)
+            if mid is None:
+                # Expired options settle at intrinsic, which is a market value, not a model one.
+                if instrument.expiry > day.as_of:
+                    modeled.add(key)
+                continue
+            values[key] = position.quantity * instrument.multiplier * mid
+    return _Marks(values, frozenset(modeled))
 
 
 def _drop_expired(holdings: dict[str, Position], as_of: datetime) -> None:
@@ -149,19 +235,29 @@ def run_backtest(
     previous: DayMarket | None = None
     book_marks: dict[str, float] = {}
     hedge_marks: dict[str, float] = {}
+    modeled_at_start: frozenset[str] = frozenset()
     pending_book_cost = 0.0
     pending_hedge_cost = 0.0
     pending_lots = 0
+    pending_option_contracts = 0
+    pending_option_cost = 0.0
     pending_failures = 0
 
     for day in market:
         if previous is not None and day.as_of <= previous.as_of:
             raise ValidationError("market days must be strictly increasing")
         if previous is not None:
-            book_now = _value(book, day.snapshot)
-            hedge_now = _value(hedges, day.snapshot)
+            book_end = _value(book, day)
+            hedge_end = _value(hedges, day)
+            book_now, hedge_now = book_end.values, hedge_end.values
             book_pnl = sum(book_now[k] - book_marks[k] for k in book_now)
             hedge_pnl = sum(hedge_now[k] - hedge_marks[k] for k in hedge_now)
+            option_keys = {
+                k
+                for k, p in (*book.items(), *hedges.items())
+                if isinstance(p.instrument, OptionContract)
+            }
+            modeled = (modeled_at_start | book_end.modeled | hedge_end.modeled) & option_keys
             held = {**book, **hedges}
             marks = {**book_marks, **hedge_marks}
             if len(held) != len(book) + len(hedges):
@@ -172,6 +268,13 @@ def run_backtest(
                 }
                 held = dict(book)
                 _merge(held, hedges.values())
+            end_modeled = book_end.modeled | hedge_end.modeled
+            modeled_units_sq = sum(
+                (position.quantity * position.instrument.multiplier) ** 2
+                * ((key in modeled_at_start) + (key in end_modeled))
+                for key, position in held.items()
+                if key in modeled
+            )
             financing = _financing(held, marks, previous, day)
             income = _carry_income(held, previous, day)
             total_cost = pending_book_cost + pending_hedge_cost
@@ -185,8 +288,13 @@ def run_backtest(
                     hedge_cost=pending_hedge_cost,
                     book_cost=pending_book_cost,
                     hedge_lots=pending_lots,
+                    hedge_option_contracts=pending_option_contracts,
+                    hedge_option_cost=pending_option_cost,
                     failures=pending_failures,
                     carry_income=income,
+                    model_marked=len(modeled) if day.observed_mid is not None else 0,
+                    option_positions=len(option_keys) if day.observed_mid is not None else 0,
+                    modeled_units_sq=float(modeled_units_sq),
                 )
             )
         _drop_expired(book, day.as_of)
@@ -203,8 +311,15 @@ def run_backtest(
                 for t in policy.trades(day, list(book.values()), list(hedges.values()))
                 if t.quantity != 0
             ]
-            pending_hedge_cost = _trade_cost(day, hedge_trades)
+            # Each trade is quoted once, so a market that counts its quotes sees each trade once.
+            costs = [_trade_cost(day, (t,)) for t in hedge_trades]
+            is_option = [isinstance(t.instrument, OptionContract) for t in hedge_trades]
+            pending_hedge_cost = sum(costs)
             pending_lots = sum(abs(t.quantity) for t in hedge_trades)
+            pending_option_contracts = sum(
+                abs(t.quantity) for t, opt in zip(hedge_trades, is_option, strict=True) if opt
+            )
+            pending_option_cost = sum(c for c, opt in zip(costs, is_option, strict=True) if opt)
             _merge(hedges, hedge_trades)
         except GNError as exc:
             # Expected failures to hedge. A programming error still raises, rather than being
@@ -213,11 +328,16 @@ def run_backtest(
                 raise
             pending_hedge_cost = 0.0
             pending_lots = 0
+            pending_option_contracts = 0
+            pending_option_cost = 0.0
             pending_failures = 1
             result.failures.append(f"{day.as_of.date()}: {type(exc).__name__}: {exc}")
+            result.failure_dates.append(day.as_of)
 
-        book_marks = _value(book, day.snapshot)
-        hedge_marks = _value(hedges, day.snapshot)
+        book_start = _value(book, day)
+        hedge_start = _value(hedges, day)
+        book_marks, hedge_marks = book_start.values, hedge_start.values
+        modeled_at_start = book_start.modeled | hedge_start.modeled
         previous = day
     result.final_day_cost = pending_book_cost + pending_hedge_cost
     return result

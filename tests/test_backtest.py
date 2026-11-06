@@ -10,7 +10,13 @@ import pytest
 from numpy.testing import assert_allclose
 
 from greeks_neutralizer.backtest.engine import BacktestResult, DayMarket, DayResult, run_backtest
-from greeks_neutralizer.backtest.policies import DeltaBand, DeltaDaily, OptimizerPolicy, Unhedged
+from greeks_neutralizer.backtest.policies import (
+    DeltaBand,
+    DeltaDaily,
+    OptimizerPolicy,
+    Unhedged,
+    registered_policy,
+)
 from greeks_neutralizer.backtest.proxy import (
     HistoryRow,
     LongPutOverlayBook,
@@ -373,3 +379,69 @@ def test_stress_days_reads_requested_dates_only():
     rows = stress_days([result], wanted)
     assert len(rows) == 1
     assert rows[0].pnl_by_policy["x"] == 2.0
+
+
+def test_warmup_trim_drops_only_failures_that_cannot_touch_measured_days():
+    """Oracle, from the engine's accounting: P&L day i is the market day after the decision
+    that drives it, so with a warm-up of w P&L days the first kept decision is market day w.
+    A failure before that is warm-up; one on or after it is measured, including the final day.
+    Previously every failure was kept, so a warm-up failure counted against measured days."""
+    fail_on = {1, 2, 49}
+
+    class FailsOn:
+        name = "fails_on"
+
+        def __init__(self):
+            self.index = -1
+
+        def trades(self, day, book, hedges):
+            self.index += 1
+            if self.index in fail_on:
+                raise MarketDataError(f"no quotes on market day {self.index}")
+            return ()
+
+    market = list(rising_market(50))
+    result = run_backtest(market, ShortStrangleBook(), FailsOn())
+    assert len(result.failures) == 3
+    trimmed = result.after_warmup(2)
+    assert [d.as_of for d in trimmed.days] == [m.as_of for m in market[3:]]
+    assert trimmed.failure_dates == [market[2].as_of, market[49].as_of]
+    assert policy_stats(trimmed).failed_days == 2
+    assert sum(d.failures for d in trimmed.days) == 1
+    assert result.after_warmup(0).failures == result.failures
+    with pytest.raises(ValidationError):
+        result.after_warmup(50)
+    undated = BacktestResult("undated", result.days, ["x"])
+    with pytest.raises(ValidationError, match="not dated"):
+        undated.after_warmup(1)
+
+
+def test_time_limited_solve_is_a_failed_day_not_a_hedge(monkeypatch):
+    """A solve that stopped at the wall-clock backstop depends on machine load, which made an
+    early chain run irreproducible. The policy must refuse it, so the day is recorded as failed.
+    Oracle: the optimizer's documented SOLVER_TIME_LIMIT issue."""
+    from types import SimpleNamespace
+
+    from greeks_neutralizer.backtest import policies
+    from greeks_neutralizer.errors import SearchLimitError
+
+    day = next(iter(rising_market(3)))
+    timed_out = SimpleNamespace(
+        legs=(), issues=("SOLVER_TIME_LIMIT the search stopped at the 30s backstop",)
+    )
+    monkeypatch.setattr(policies, "solve_hedge", lambda problem, snapshot: timed_out)
+    policy = policies.registered_policy("opt_dgv", "SPX")
+    with pytest.raises(SearchLimitError, match="backstop"):
+        policy.trades(day, [], [])
+
+
+def test_registered_optimizers_are_bounded_by_nodes_not_the_clock():
+    """The registered search stops at a node count. The clock is only a backstop, set far above
+    any solve here, so the same data and code give the same result on a loaded machine."""
+    from greeks_neutralizer.backtest.policies import REGISTERED_POLICIES, OptimizerPolicy
+
+    for name in REGISTERED_POLICIES:
+        policy = registered_policy(name, "SPX")
+        if isinstance(policy, OptimizerPolicy):
+            assert policy.config.mip_node_limit == 300
+            assert policy.config.time_limit_seconds >= 600.0

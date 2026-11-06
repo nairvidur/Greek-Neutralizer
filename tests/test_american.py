@@ -167,3 +167,14 @@ def test_never_optimal_routing_rule():
         np.array([False, False, True, False, False]),
     )
     assert mask.tolist() == [False, True, True, True, False]
+
+
+@pytest.mark.parametrize("rate", [0.0, -0.01])
+def test_dividend_after_expiry_at_non_positive_rates_is_silent_and_ignored(rate):
+    """A dividend past expiry is padded as an infinite time. At r <= 0 that made -r * inf
+    non-finite, and the repo treats the resulting RuntimeWarning as an error. Oracle: a dividend
+    after expiry cannot change an option's value, so the price must equal the no-dividend price."""
+    late = batch(100.0, [95.0, 105.0], 0.25, rate, 0.0, 0.3, [1, -1], divs=[(0.1, 0.5), (0.5, 1.0)])
+    early_only = batch(100.0, [95.0, 105.0], 0.25, rate, 0.0, 0.3, [1, -1], divs=[(0.1, 0.5)])
+    assert np.isinf(late.div_times[:, 1]).all()
+    assert_allclose(american_price(late), american_price(early_only), rtol=0, atol=1e-12)

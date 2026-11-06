@@ -57,7 +57,10 @@ def _pv_divs_at(b: AmericanBatch, t: FloatArray) -> FloatArray:
     if b.div_times.shape[1] == 0:
         return np.zeros_like(t)
     live = (b.div_times > t[:, None]) & (b.div_times <= b.T[:, None])
-    pv = b.div_amounts * np.exp(-b.r[:, None] * np.maximum(b.div_times - t[:, None], 0.0))
+    # Unused slots hold an infinite time, and -r * inf is not finite when r <= 0, so the gap is
+    # taken only where the dividend is live.
+    gap = np.where(live, b.div_times - t[:, None], 0.0)
+    pv = b.div_amounts * np.exp(-b.r[:, None] * gap)
     return np.asarray(np.sum(np.where(live, pv, 0.0), axis=1), dtype=np.float64)
 
 

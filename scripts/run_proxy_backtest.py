@@ -21,7 +21,7 @@ from pathlib import Path
 
 from greeks_neutralizer._version import __version__
 from greeks_neutralizer.backtest.engine import BacktestResult, run_backtest
-from greeks_neutralizer.backtest.policies import DeltaBand, DeltaDaily, OptimizerPolicy, Unhedged
+from greeks_neutralizer.backtest.policies import registered_policy
 from greeks_neutralizer.backtest.proxy import (
     SYMBOL,
     HistoryRow,
@@ -33,46 +33,10 @@ from greeks_neutralizer.backtest.proxy import (
     load_fred_series,
 )
 from greeks_neutralizer.backtest.report import compare, policy_stats, stress_days
-from greeks_neutralizer.hedging.problem import GreekName, GreekTarget, HedgeConfig
-from greeks_neutralizer.risk.scenarios import HISTORICAL_STRESSES
 
+# Dropped from the report while the trailing long-run vol level is still forming.
 WARMUP_DAYS = 252
 STRESS_DAYS = (date(2018, 2, 5), date(2020, 3, 16), date(2024, 8, 5))
-
-
-def _targets(*greeks: GreekName) -> tuple[GreekTarget, ...]:
-    return tuple(GreekTarget(SYMBOL, greek) for greek in greeks)
-
-
-def _config(risk_aversion: float, cvar_weight: float = 0.0) -> HedgeConfig:
-    return HedgeConfig(
-        risk_aversion=risk_aversion,
-        cvar_weight=cvar_weight,
-        cvar_alpha=0.8,
-        mip_gap=1e-2,
-        max_legs=6,
-    )
-
-
-def build_policy(name: str):  # type: ignore[no-untyped-def]
-    delta, gamma, vega = GreekName.DELTA, GreekName.GAMMA, GreekName.VEGA
-    if name == "unhedged":
-        return Unhedged()
-    if name == "delta_daily":
-        return DeltaDaily(SYMBOL)
-    if name == "delta_band":
-        return DeltaBand(SYMBOL, proportional_cost=5e-5, risk_aversion=1e-6)
-    if name == "opt_dg":
-        return OptimizerPolicy(name, _targets(delta, gamma), _config(1.0))
-    if name == "opt_dgv":
-        return OptimizerPolicy(name, _targets(delta, gamma, vega), _config(1.0))
-    if name == "opt_dgv_cheap":
-        return OptimizerPolicy(name, _targets(delta, gamma, vega), _config(0.2))
-    if name == "opt_dgv_cvar":
-        return OptimizerPolicy(
-            name, _targets(delta, gamma, vega), _config(0.2, 0.2), HISTORICAL_STRESSES
-        )
-    raise ValueError(name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +75,7 @@ def _run(args: tuple[Variant, tuple[HistoryRow, ...]]) -> tuple[Variant, Backtes
     start = time.perf_counter()
     market = ProxyMarket(history, spreads=SpreadModel(multiple=variant.spread_multiple))
     book = ShortStrangleBook() if variant.book == "short_strangle" else LongPutOverlayBook()
-    result = run_backtest(market, book, build_policy(variant.policy))
+    result = run_backtest(market, book, registered_policy(variant.policy, SYMBOL))
     return variant, result, time.perf_counter() - start
 
 
@@ -151,7 +115,7 @@ def main() -> None:
     for (book, multiple), results in sorted(groups.items()):
         # Sorted, because workers finish in any order and the file should not depend on it.
         results = dict(sorted(results.items()))
-        trimmed = {name: _after_warmup(r) for name, r in results.items()}
+        trimmed = {name: r.after_warmup(WARMUP_DAYS) for name, r in results.items()}
         comparisons = [
             compare(trimmed[name], trimmed[baseline]).as_dict()
             for baseline in ("unhedged", "delta_daily")
@@ -176,11 +140,6 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(output, indent=2) + "\n")
     print(f"wrote {args.out}", flush=True)
-
-
-def _after_warmup(result: BacktestResult) -> BacktestResult:
-    """Drop the first year, while the trailing long-run vol level is still forming."""
-    return BacktestResult(result.policy, result.days[WARMUP_DAYS:], result.failures)
 
 
 if __name__ == "__main__":
