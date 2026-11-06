@@ -112,12 +112,12 @@ Each claim links to what backs it, and to what it does not establish.
 | Pricing matches QuantLib | `docs/evidence/phase2/README.md`, `uv run pytest -m reference` |
 | Fits real SPX and SPY chains, arbitrage-free over quoted strikes | `docs/evidence/phase2/` |
 | Hedges real chains, with Greeks matching QuantLib to 1e-11 | `docs/evidence/phase3/` |
-| Reduces hedging risk on real market paths with **modeled** option prices | `docs/evidence/phase4/` |
+| Option-hedge optimizer on real SPY chains, 2019 to 2026: **no-go**, worse than daily delta | `docs/evidence/phase4/` |
 | Performance against provisional budgets | `docs/evidence/performance/` |
 | The web workflow works in a real browser | `docs/evidence/phase5/` |
 
-**It has no backtest on historical option chains yet.**
-That needs licensed data, and until then the claim of real hedging value is not established.
+**On historical option chains, its hedge optimizer did worse than daily delta hedging.**
+The backtest on free SPY chains gave a no-go, so the optimizer is not offered as a hedging policy; its pricing, Greeks, and scenarios stand on phases 2 and 3.
 
 ## Docs
 

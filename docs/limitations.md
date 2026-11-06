@@ -5,7 +5,7 @@ This is alpha software, and **it has not been used to hedge real money.**
 
 ## Evidence
 
-- **No historical option chain backtest.** That needs licensed data. The proxy backtest uses real index, VIX, and rate history with modeled option prices, which likely overstates option hedge effectiveness. See `docs/evidence/phase4/`.
+- **The option-hedge optimizer failed its historical-chain backtest.** On free SPY chains from 2019 to 2026 it had several times the variance of daily delta hedging and paid far more in costs, so it is not evidence-backed as a hedging policy. Most marks in that run came from the calibrated surface, because the free source rarely quotes the same contract twice, and the audit of those marks is in `docs/evidence/phase4/`.
 - **No live or paper pilot, and no reconciliation to broker or clearing statements.**
 - **No independent validation.** Every review here was automated, and only one day's real chain has been reconciled.
 

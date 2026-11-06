@@ -77,7 +77,23 @@ Tuesdays and Thursdays were added when samples showed the source has some in lat
 
 Gate decision, fixed in advance as the proxy README states it: **go** if option-hedge variance and tail reduction against daily delta clear zero at quoted spreads, and **no-go, fix the model** if they do not.
 
+## Historical-chain runs
+
+| Run | Code | Outcome | Status |
+|---|---|---|---|
+| 1 | `9e27b7d` | All 16 variants completed. The machine was starved of CPU for hours, and solves hit the 30 second wall-clock backstop, which the backtest ignored | **Rejected: exposed a defect.** Results depended on machine load |
+| 2 | `9e27b7d` plus per-period series | The 11 variants at quoted spreads, partly on a loaded machine. One variant had a timed-out day, and optimizer results matched run 1 only where run 1 was not starved | Discarded as evidence; it showed run 1 was not reproducible |
+| 3 | `40a5b8c` | All 16 variants, with no failed days and no solve at the backstop. Every optimizer variant but `opt_dgv_cheap` at quoted spreads matches, to the dollar, run 1 or run 2 wherever that run had the machine to itself, and that one was load-affected in both | **Current:** `chain_backtest.json`, and `chain_horizons.json` from its series. Decision: no-go |
+
+## Changes between chain runs 1 and 3
+
+- The backtest policy refuses a solve that stopped at the wall-clock backstop, so that day is recorded as failed instead of traded.
+- The registered configs raise that backstop from 30 to 600 seconds, so the node limit governs, as these runs were designed to. The proxy evidence was made with the old backstop, and was not rerun. Its runs 5 and 6 gave identical values, which says the backstop did not bind there.
+- Each period records option contracts traded and their cost, and per-period series are written for the post-hoc horizon check.
+
+None of these was aimed at a result, and every variant was rerun.
+
 ## Promotion rule
 
 Nothing here is promoted to a recommended default.
-That needs a rerun on historical chains, then a paper pilot.
+The chain run gave no-go, so promotion now needs a fixed policy, entered here as a new pre-registered variant before it runs, then a paper pilot.

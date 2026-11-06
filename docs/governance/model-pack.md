@@ -43,10 +43,11 @@ See `docs/evidence/`.
 | Real SPX and SPY chain against Cboe's reported values | IV within 0.10 and 0.19 vol pts, median |
 | Hedged book against QuantLib | Greeks within about 1e-11 |
 | Backtest on real paths with modeled option prices | See `docs/evidence/phase4/` |
+| Backtest on free historical SPY chains | No-go for the optimizer against daily delta; see `docs/evidence/phase4/` |
 
 ## Testing NOT performed
 
-- Backtesting on historical option chains. The proxy backtest does not replace it.
+- Backtesting on a licensed chain with every listed strike. The free chain used for phase 4 rarely quotes the same contract twice, so most marks there came from the model.
 - Reconciliation to broker or clearing statements.
 - Any live or paper pilot.
 - Independent validation.

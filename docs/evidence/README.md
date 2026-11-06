@@ -8,19 +8,20 @@ A gate met only by proxy is reported as open.
 | 1. Foundations | Clean wheel install, and a regression test per baseline defect | **Met** | `phase1/` |
 | 2. Listed options analytics | Reconciled with QuantLib and a real chain | **Met**, with limitations | `phase2/` |
 | 3. Optimizer and risk | Independent verification, and stress reviewed | **Met**, with limitations | `phase3/` |
-| 4. Evidence | Out-of-sample report on chains, net of costs | **Open:** proxy only, needs licensed data | `phase4/` |
+| 4. Evidence | Out-of-sample report on chains, net of costs | **Met on free chains, with a no-go** for the option-hedge optimizer; daily delta stays the baseline | `phase4/` |
 | 5. Product | Browser workflow, load test, restore drill, threat model | **Met on one machine**, not on a real deployment | `phase5/` |
 | 6. Pilot | Shadow mode, independent validation, pen test | **Not started:** needs people and partners | |
 | 7. Expansion | Futures options, FX, rates, commodities, crypto | **Not started** | |
 
-Phase 5 went ahead with phase 4 open, because that gate depends on data that has to be purchased, and building a workflow risks no money.
+Phase 5 went ahead with phase 4 open, because that gate then seemed to need purchased data, and building a workflow risks no money.
 That is a departure from running the phases strictly in order.
+Phase 4 has since been run on free historical chains, and its no-go means the optimizer is not offered as a hedging policy until a fixed version passes a new pre-registered run.
 
 ## What needs a human
 
 | Item | Needed for |
 |---|---|
-| Historical option chain data license | Closing phase 4 |
+| Licensed option chain with every listed strike | Marking held positions at observed prices, and rerunning phase 4 after the optimizer is fixed |
 | Live data agreement, including OPRA redistribution terms | Any real use |
 | Design partner | Phase 6 |
 | Independent model validator, and penetration tester | Phase 6 |
