@@ -1,0 +1,557 @@
+{
+  "note": "Post-hoc: added after the pre-registered chain results were read, to test whether model-mark noise explains them. It does not change the pre-registered decision.",
+  "baseline": "delta_daily",
+  "horizons_in_periods": [
+    1,
+    5,
+    10,
+    20
+  ],
+  "books": {
+    "short_strangle": {
+      "delta_band": {
+        "periods": 1180,
+        "total_pnl": -472246.3428191984,
+        "hedge_cost": 3799.919999996544,
+        "hedge_option_cost": 0.0,
+        "option_contracts_per_period": 0.0,
+        "mean_hedge_pnl_ex_cost": -269.0782284765267,
+        "lag1_autocorrelation_of_difference": 0.036574856239193404,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -0.3265438184945577,
+            "ci_low": -0.5460549055206174,
+            "ci_high": -0.19181581132775402
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -0.39538287372621683,
+            "ci_low": -0.7610100834849833,
+            "ci_high": -0.18248800242183572
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -0.5373868207250794,
+            "ci_low": -0.9018203804231534,
+            "ci_high": -0.29189109382971046
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -0.5594125798028458,
+            "ci_low": -1.0923771222627185,
+            "ci_high": -0.18137354114523857
+          }
+        }
+      },
+      "delta_daily": {
+        "periods": 1180,
+        "total_pnl": -331748.1081702919,
+        "hedge_cost": 10391.299999990548,
+        "hedge_option_cost": 0.0,
+        "option_contracts_per_period": 0.0,
+        "mean_hedge_pnl_ex_cost": -138.7589312287089
+      },
+      "opt_dg": {
+        "periods": 1180,
+        "total_pnl": -6070137.892617375,
+        "hedge_cost": 5537876.0836133575,
+        "hedge_option_cost": 5442441.363613445,
+        "option_contracts_per_period": 451.8101694915254,
+        "mean_hedge_pnl_ex_cost": 83.47342286379535,
+        "lag1_autocorrelation_of_difference": -0.070351897636082,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -12.551809901037263,
+            "ci_low": -23.565115733925637,
+            "ci_high": -7.163551648703318
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -8.874544624308605,
+            "ci_low": -20.745826481453502,
+            "ci_high": -4.548509686009562
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -14.7784968439236,
+            "ci_low": -29.54239307542414,
+            "ci_high": -7.383632730151873
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -21.535179977538757,
+            "ci_low": -41.936915479293056,
+            "ci_high": -11.169966175613965
+          }
+        }
+      },
+      "opt_dgv": {
+        "periods": 1180,
+        "total_pnl": -12816775.74487836,
+        "hedge_cost": 11357273.9582608,
+        "hedge_option_cost": 11188854.388260953,
+        "option_contracts_per_period": 774.7008474576271,
+        "mean_hedge_pnl_ex_cost": -1418.6091777988372,
+        "lag1_autocorrelation_of_difference": -0.002492334411865638,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -20.575136170173074,
+            "ci_low": -37.856401960007155,
+            "ci_high": -11.0666260075436
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -21.396177071805557,
+            "ci_low": -51.69436364754823,
+            "ci_high": -10.415714023439705
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -28.082733760336072,
+            "ci_low": -57.78444160334075,
+            "ci_high": -13.327827980801624
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -37.85959366645987,
+            "ci_low": -72.13948228475634,
+            "ci_high": -21.55145807324353
+          }
+        }
+      },
+      "opt_dgv_bounded": {
+        "periods": 1180,
+        "total_pnl": -1688836.0747223073,
+        "hedge_cost": 944193.2985297989,
+        "hedge_option_cost": 933937.5685298082,
+        "option_contracts_per_period": 40.13813559322034,
+        "mean_hedge_pnl_ex_cost": -474.3064811062647,
+        "lag1_autocorrelation_of_difference": 0.017980177091557793,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.6093320781858427,
+            "ci_low": 0.4418451458973651,
+            "ci_high": 0.7269553610284815
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.6838557517844029,
+            "ci_low": 0.4043897379973335,
+            "ci_high": 0.8125070017352412
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.5772994921231633,
+            "ci_low": 0.32421702470321895,
+            "ci_high": 0.7489872508157315
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.3408800302887355,
+            "ci_low": -0.02594861404013924,
+            "ci_high": 0.6635581473199008
+          }
+        }
+      },
+      "opt_dgv_bounded_band": {
+        "periods": 1180,
+        "total_pnl": -1267131.4404032181,
+        "hedge_cost": 500792.28412880574,
+        "hedge_option_cost": 491700.93412881397,
+        "option_contracts_per_period": 23.688983050847458,
+        "mean_hedge_pnl_ex_cost": -520.0989939020632,
+        "lag1_autocorrelation_of_difference": 0.05888243778760938,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.4250213994752349,
+            "ci_low": 0.25491534211404254,
+            "ci_high": 0.6586632167707507
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.5454453976713507,
+            "ci_low": 0.3175358818128044,
+            "ci_high": 0.7471682345505412
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.4487604223363778,
+            "ci_low": 0.19595257274015696,
+            "ci_high": 0.6195127241268759
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.24594086419444205,
+            "ci_low": -0.1261557308739994,
+            "ci_high": 0.5763141689105741
+          }
+        }
+      },
+      "opt_dgv_cheap": {
+        "periods": 1180,
+        "total_pnl": -4055131.899148048,
+        "hedge_cost": 4111525.369999899,
+        "hedge_option_cost": 4001570.499999999,
+        "option_contracts_per_period": 506.32966101694916,
+        "mean_hedge_pnl_ex_cost": -136.50243465190164,
+        "lag1_autocorrelation_of_difference": 0.04187679639837592,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -13.504660956025846,
+            "ci_low": -28.838236158659445,
+            "ci_high": -5.703368168656126
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -12.156370747120947,
+            "ci_low": -31.889199834985487,
+            "ci_high": -4.331965255456028
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -14.493153290015268,
+            "ci_low": -31.368269266065802,
+            "ci_high": -6.040410686356369
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -18.067258998522036,
+            "ci_low": -41.074382612385676,
+            "ci_high": -6.604864060411927
+          }
+        }
+      },
+      "opt_dgv_cvar": {
+        "periods": 1180,
+        "total_pnl": -4866564.376196274,
+        "hedge_cost": 4289217.794349183,
+        "hedge_option_cost": 4175010.814349287,
+        "option_contracts_per_period": 513.1466101694915,
+        "mean_hedge_pnl_ex_cost": -45.42864090767748,
+        "lag1_autocorrelation_of_difference": -0.019475843265467405,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -10.613860657018947,
+            "ci_low": -19.14293589890572,
+            "ci_high": -5.930064501386015
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -8.664685985960949,
+            "ci_low": -22.954087052565328,
+            "ci_high": -3.4690592956623054
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -14.804879890048163,
+            "ci_low": -32.35068776079462,
+            "ci_high": -6.13076862501403
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -14.993197937964936,
+            "ci_low": -28.918752101842806,
+            "ci_high": -7.890940369978863
+          }
+        }
+      },
+      "opt_dgv_surface": {
+        "periods": 1180,
+        "total_pnl": -1435284.173122837,
+        "hedge_cost": 555988.6877621349,
+        "hedge_option_cost": 548634.9677621416,
+        "option_contracts_per_period": 25.235593220338984,
+        "mean_hedge_pnl_ex_cost": -596.9455984468002,
+        "lag1_autocorrelation_of_difference": 0.049693431116964976,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.5907041876273258,
+            "ci_low": 0.3674890252090748,
+            "ci_high": 0.7203586037049583
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.6737149253433814,
+            "ci_low": 0.30148287536559487,
+            "ci_high": 0.8332563789338526
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.5113705948318445,
+            "ci_low": 0.10838104057881891,
+            "ci_high": 0.7661206573329796
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.12572049096140858,
+            "ci_low": -0.5193500668941078,
+            "ci_high": 0.6764105542680147
+          }
+        }
+      },
+      "unhedged": {
+        "periods": 1180,
+        "total_pnl": -154760.35819179195,
+        "hedge_cost": 0.0,
+        "hedge_option_cost": 0.0,
+        "option_contracts_per_period": 0.0,
+        "mean_hedge_pnl_ex_cost": 0.0,
+        "lag1_autocorrelation_of_difference": -0.0452206197841236,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -3.3864984596347707,
+            "ci_low": -4.940398412723067,
+            "ci_high": -2.081487307244026
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -3.723437695365585,
+            "ci_low": -6.3331120387981406,
+            "ci_high": -0.8561749026257556
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -3.747432029324038,
+            "ci_low": -5.60631304734391,
+            "ci_high": -1.6160026900762547
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -2.7648897490411515,
+            "ci_low": -5.477369929694315,
+            "ci_high": -1.12009846159414
+          }
+        }
+      }
+    },
+    "long_put_overlay": {
+      "delta_daily": {
+        "periods": 1180,
+        "total_pnl": -8700594.527152702,
+        "hedge_cost": 44719.099999959326,
+        "hedge_option_cost": 0.0,
+        "option_contracts_per_period": 0.0,
+        "mean_hedge_pnl_ex_cost": -17983.29958169969
+      },
+      "opt_dgv": {
+        "periods": 1180,
+        "total_pnl": -18984440.49678574,
+        "hedge_cost": 13071190.806988291,
+        "hedge_option_cost": 12887488.326988459,
+        "option_contracts_per_period": 860.1177966101695,
+        "mean_hedge_pnl_ex_cost": -15690.893471732963,
+        "lag1_autocorrelation_of_difference": 0.07240583590424234,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.175455465417107,
+            "ci_low": -0.7620005529654442,
+            "ci_high": 0.5317193944291372
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.3073936439896475,
+            "ci_low": -1.236651236115824,
+            "ci_high": 0.675764238047989
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.10420121143707795,
+            "ci_low": -1.441388846865458,
+            "ci_high": 0.5535939905848424
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -0.3589768123975876,
+            "ci_low": -2.3798512783933736,
+            "ci_high": 0.2842504586902778
+          }
+        }
+      },
+      "opt_dgv_bounded": {
+        "periods": 1180,
+        "total_pnl": -12161746.769555403,
+        "hedge_cost": 5118821.288336262,
+        "hedge_option_cost": 5076811.048336301,
+        "option_contracts_per_period": 187.67457627118645,
+        "mean_hedge_pnl_ex_cost": -16722.10558414955,
+        "lag1_autocorrelation_of_difference": 0.06656265718410678,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.46316760803933044,
+            "ci_low": 0.2813395010048484,
+            "ci_high": 0.705758669713869
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.5938006892078853,
+            "ci_low": 0.21134837134573098,
+            "ci_high": 0.7813735540841316
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.4447069672407419,
+            "ci_low": -0.008841262896818889,
+            "ci_high": 0.6370056560974278
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.2653773213102253,
+            "ci_low": -0.31206709721450415,
+            "ci_high": 0.64380481913502
+          }
+        }
+      },
+      "opt_dgv_bounded_band": {
+        "periods": 1180,
+        "total_pnl": -10460465.87109695,
+        "hedge_cost": 3449056.4070527945,
+        "hedge_option_cost": 3409757.557052831,
+        "option_contracts_per_period": 130.28813559322035,
+        "mean_hedge_pnl_ex_cost": -16813.003230523103,
+        "lag1_autocorrelation_of_difference": 0.0711155815975186,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.4950969203836768,
+            "ci_low": 0.28470793870503547,
+            "ci_high": 0.6857349193934347
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.6510700650581038,
+            "ci_low": 0.23768795678437282,
+            "ci_high": 0.7840868916646
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.5247484741569846,
+            "ci_low": 0.05394242187321533,
+            "ci_high": 0.7016310376774008
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.36151841730380774,
+            "ci_low": -0.14277484344554783,
+            "ci_high": 0.6513761561674755
+          }
+        }
+      },
+      "opt_dgv_cheap": {
+        "periods": 1180,
+        "total_pnl": -10124710.170488164,
+        "hedge_cost": 3819444.2099999012,
+        "hedge_option_cost": 3710898.0,
+        "option_contracts_per_period": 409.6694915254237,
+        "mean_hedge_pnl_ex_cost": -15979.935614323822,
+        "lag1_autocorrelation_of_difference": -0.06969301603496772,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.16622793169833294,
+            "ci_low": 0.003655971775975472,
+            "ci_high": 0.29703700219094625
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.41847569836227316,
+            "ci_low": 0.16857239314436892,
+            "ci_high": 0.537036070213044
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.33372017709096213,
+            "ci_low": -0.10037470418896967,
+            "ci_high": 0.5284758341358302
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.4327553852508981,
+            "ci_low": -0.07789233946351674,
+            "ci_high": 0.7255766847037118
+          }
+        }
+      },
+      "opt_dgv_surface": {
+        "periods": 1180,
+        "total_pnl": -9830490.782657256,
+        "hedge_cost": 3091714.1492597726,
+        "hedge_option_cost": 3066834.859259795,
+        "option_contracts_per_period": 127.41186440677966,
+        "mean_hedge_pnl_ex_cost": -16669.59252457394,
+        "lag1_autocorrelation_of_difference": 0.06039587595085501,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": 0.6394566661833367,
+            "ci_low": 0.32094253814862317,
+            "ci_high": 0.7724569690147927
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": 0.7354712832401107,
+            "ci_low": 0.2878993409848639,
+            "ci_high": 0.8710563039683049
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": 0.6010396770114279,
+            "ci_low": 0.07662552016408915,
+            "ci_high": 0.8137689773301654
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": 0.34874132646538203,
+            "ci_low": -0.3874955818912653,
+            "ci_high": 0.7518334762032463
+          }
+        }
+      },
+      "unhedged": {
+        "periods": 1180,
+        "total_pnl": 9359847.590000978,
+        "hedge_cost": 0.0,
+        "hedge_option_cost": 0.0,
+        "option_contracts_per_period": 0.0,
+        "mean_hedge_pnl_ex_cost": 0.0,
+        "lag1_autocorrelation_of_difference": 0.00022118210729301068,
+        "by_horizon": {
+          "1": {
+            "windows": 1180,
+            "variance_reduction": -45.123244345409056,
+            "ci_low": -106.02274373505814,
+            "ci_high": -25.973949234384417
+          },
+          "5": {
+            "windows": 236,
+            "variance_reduction": -28.025842050721767,
+            "ci_low": -94.51044868915255,
+            "ci_high": -14.208107642276447
+          },
+          "10": {
+            "windows": 118,
+            "variance_reduction": -43.145116236987384,
+            "ci_low": -127.37530315274819,
+            "ci_high": -20.64912352517385
+          },
+          "20": {
+            "windows": 59,
+            "variance_reduction": -31.02989386521221,
+            "ci_low": -72.38256269711401,
+            "ci_high": -17.99846735826716
+          }
+        }
+      }
+    }
+  }
+}

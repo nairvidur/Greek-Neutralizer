@@ -112,12 +112,14 @@ Each claim links to what backs it, and to what it does not establish.
 | Pricing matches QuantLib | `docs/evidence/phase2/README.md`, `uv run pytest -m reference` |
 | Fits real SPX and SPY chains, arbitrage-free over quoted strikes | `docs/evidence/phase2/` |
 | Hedges real chains, with Greeks matching QuantLib to 1e-11 | `docs/evidence/phase3/` |
-| Option-hedge optimizer on real SPY chains, 2019 to 2026: **no-go**, worse than daily delta | `docs/evidence/phase4/` |
+| Option-hedge optimizer on free historical chains, 2020 to 2026: **no-go** as first configured; the position-aware fix is a **go** on held-out DIA, **not confirmed** on XLF | `docs/evidence/phase4/` |
 | Performance against provisional budgets | `docs/evidence/performance/` |
 | The web workflow works in a real browser | `docs/evidence/phase5/` |
 
-**On historical option chains, its hedge optimizer did worse than daily delta hedging.**
-The backtest on free SPY chains gave a no-go, so the optimizer is not offered as a hedging policy; its pricing, Greeks, and scenarios stand on phases 2 and 3.
+**On historical option chains, its hedge optimizer as first configured did worse than daily delta hedging.**
+It priced each trade but not the position left, so it stacked offsetting legs.
+With exits priced and gross contracts capped, it cut a short strangle's variance against daily delta by 43% to 61% on DIA, a held-out symbol, at a cost of most of the strangle's carry, and XLF did not confirm the tail improvement.
+Daily delta stays the recommended default; the fixed optimizer is a candidate for a paper pilot.
 
 ## Docs
 

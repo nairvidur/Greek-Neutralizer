@@ -83,7 +83,10 @@ Gate decision, fixed in advance as the proxy README states it: **go** if option-
 |---|---|---|---|
 | 1 | `9e27b7d` | All 16 variants completed. The machine was starved of CPU for hours, and solves hit the 30 second wall-clock backstop, which the backtest ignored | **Rejected: exposed a defect.** Results depended on machine load |
 | 2 | `9e27b7d` plus per-period series | The 11 variants at quoted spreads, partly on a loaded machine. One variant had a timed-out day, and optimizer results matched run 1 only where run 1 was not starved | Discarded as evidence; it showed run 1 was not reproducible |
-| 3 | `40a5b8c` | All 16 variants, with no failed days and no solve at the backstop. Every optimizer variant but `opt_dgv_cheap` at quoted spreads matches, to the dollar, run 1 or run 2 wherever that run had the machine to itself, and that one was load-affected in both | **Current:** `chain_backtest.json`, and `chain_horizons.json` from its series. Decision: no-go |
+| 3 | `40a5b8c` | All 16 variants, with no failed days and no solve at the backstop. Every optimizer variant but `opt_dgv_cheap` at quoted spreads matches, to the dollar, run 1 or run 2 wherever that run had the machine to itself, and that one was load-affected in both | `chain_backtest.json`, and `chain_horizons.json` from its series. Decision: no-go for the optimizer as first configured |
+| 4, SPY | `cccaad6` | All 25 variants under the gap rule, with no failed days. A first start on `74a7041`, before the correction, was stopped and not read | **Current for SPY:** `chain_run4_spy.json`. In-sample for the fixed variants |
+| DIA | `cccaad6` | All 25 variants, held out, with no failed days | **Current:** `chain_holdout_dia.json`. Decision: go for all three fixed variants |
+| XLF | `cccaad6` | All 25 variants, held out, with no failed days. 231 days fail closed for too few usable strikes | **Current:** `chain_holdout_xlf.json`. The go is not confirmed |
 
 ## Changes between chain runs 1 and 3
 
@@ -174,8 +177,23 @@ SPY chain run 4, started on the first version, was stopped and not read.
   Removing a strangle's risk removes much of its premium, so a go says the hedge reduces risk at a measured cost, not that it pays.
 - SPY is rerun with all 25 variants under the gap rule as chain run 4. Its results for the new variants are in-sample, and are labeled so.
 
+### Held-out decision
+
+By the rule above, decided on DIA at quoted spreads on the short strangle, each fixed variant is a **go**:
+
+| Policy | Variance reduction vs delta | ES improvement | Mean P&L per period |
+|---|---|---|---|
+| `opt_dgv_bounded` | 60.9% (44.3 to 73.4) | $11,799 (4,086 to 21,064) | -$1,150 (-1,489 to -743) |
+| `opt_dgv_bounded_band` | 42.5% (25.6 to 65.1) | $9,933 (3,446 to 18,705) | -$793 (-1,155 to -373) |
+| `opt_dgv_surface` | 59.1% (36.0 to 72.7) | $12,546 (3,473 to 22,860) | -$935 (-1,301 to -524) |
+
+On XLF no fixed variant's ES improvement clears zero, so the go is **not confirmed**.
+The mean P&L difference is the carry given up, and its interval is below zero for each.
+The post-hoc horizon checks, `chain_*_horizons.json`, were run after these results were read and do not change the decision.
+
 ## Promotion rule
 
 Nothing here is promoted to a recommended default.
 The chain run gave no-go, so promotion now needs a fixed policy, entered here as a new pre-registered variant before it runs, then a paper pilot.
 The position-aware variants above are that entry: a go on the held-out test makes one eligible for a paper pilot, not a default.
+All three are eligible, unconfirmed on XLF, and the pilot should run them side by side, since these data do not separate them.

@@ -2,15 +2,96 @@
 
 Gate: "a published out-of-sample report net of costs, including a go/no-go decision."
 
-**Gate status: MET on free historical chains, with a NO-GO decision for the option-hedge optimizer as configured.**
-The decision rule was fixed in advance: go if option-hedge variance and tail reduction against daily delta clear zero at quoted spreads, and no-go, fix the model, if they do not.
-On real SPY chains they do not clear zero for the short strangle: every optimizer variant had several times the variance of daily delta, worse expected shortfall, and far higher cost.
-The proxy's 91% variance reduction does not survive real quotes.
+**Gate status: MET on free historical chains.**
 
-Daily delta hedging remains the recommended policy for books like these.
-The optimizer is not promoted, and the reasons it failed are below, with what to fix.
+- **The optimizer as first configured: NO-GO.** On SPY chains every variant had many times the variance of daily delta, worse expected shortfall, and far higher cost, so the proxy's 91% variance reduction did not survive real quotes.
+- **The position-aware fix: GO on the held-out DIA test, NOT CONFIRMED on XLF.** On DIA, a symbol held out until the fix was entered in `ledger.md`, all three fixed variants cut the short strangle's variance against daily delta by 43% to 61%, and its 97.5% expected shortfall, with both intervals above zero at quoted spreads.
+  On XLF, the second held-out symbol, variance fell 20% to 40%, but no tail improvement was established.
+- **The hedge is not free.** On DIA it gave up $790 to $1,150 a period against daily delta, with intervals below zero: removing a strangle's risk removes much of its premium.
+- **It is fragile.** At three times quoted spreads, or on the long put overlay, or over sums of 20 periods, the DIA result mostly does not hold.
 
-## Historical chains: what was run
+Daily delta hedging remains the recommended default.
+The fixed optimizer is eligible for a paper pilot, as the promotion rule allows, and is not a default.
+
+## Position-aware optimizer: the held-out test
+
+### What was fixed
+
+Chain run 3, below, showed the optimizer's objective priced only each day's trade, never the position it left.
+A daily re-hedge on a strike grid that moves with spot added new legs each day and never unwound offsetting ones: one SPY trace held 1,313 contracts in 28 legs against a 200-contract book.
+That book was flat in net delta, gamma, and 30-day vega, but exposed to skew and term structure, and most of it was marked from the model.
+
+The fix, in `HedgeConfig`, `HedgeProblem`, and `OptimizerPolicy` and described in `docs/conventions.md`:
+
+- `price_exit` charges each candidate's half-spread and fee on the hedger's position after the trade, so unwinding a held hedge saves an exit and stacking a new one adds one.
+- `max_gross_option_contracts` caps the hedger's option contracts after the trade, here at the book's own count.
+- `option_band` trades options only when residual gamma or vega leaves half the book's own, and hedges delta alone otherwise.
+- `SURFACE_SHAPE_SHOCKS`, six skew, front-vol, selloff, and rally moves, enter the third variant's CVaR.
+
+Three variants were entered in `ledger.md` and committed before any run on the held-out symbols: `opt_dgv_bounded`, `opt_dgv_bounded_band`, and `opt_dgv_surface`.
+An independent review then found that the first version charged exits on the client's own positions too, and that was fixed, and recorded, before those runs.
+
+### The test
+
+- SPY was rerun with all 25 variants as chain run 4. Its results for the fixed variants are in-sample, since the fix was designed on SPY.
+- DIA, primary, and XLF, secondary, were held out: of the ETFs probed, they are the only two besides SPY that the free source carries.
+  Their chains were downloaded before the fix was entered, and no backtest ran on them before it.
+- They share SPY's calendar, 2020-01-06 to 2026-10-30, so the market regime is not held out, only the instrument, its quotes, and its contracts.
+- Books, costs, and settings are SPY's, at the same contract counts.
+- Each run now starts after the last gap of more than 15 days between chain days. The source has one chain day in 2019 for each symbol, then none until 2020, and in run 3 that made SPY's first period eight months long.
+
+### Results: short strangle, 100 lots, quoted spreads
+
+Against daily delta, with 95% block-bootstrap intervals.
+
+| Symbol | Policy | Variance reduction | ES improvement | Mean P&L per period | Hedge cost |
+|---|---|---|---|---|---:|
+| DIA, held out | `opt_dgv_bounded` | **60.9% (44.3 to 73.4)** | **$11,799 (4,086 to 21,064)** | -$1,150 (-1,489 to -743) | 944,193 |
+| DIA, held out | `opt_dgv_bounded_band` | **42.5% (25.6 to 65.1)** | **$9,933 (3,446 to 18,705)** | -$793 (-1,155 to -373) | 500,792 |
+| DIA, held out | `opt_dgv_surface` | **59.1% (36.0 to 72.7)** | **$12,546 (3,473 to 22,860)** | -$935 (-1,301 to -524) | 555,989 |
+| DIA, held out | `opt_dgv`, as first configured | -2,058% (-3,712 to -1,081) | -$119,034 | -$10,581 | 11,357,274 |
+| XLF, held out | `opt_dgv_bounded` | 19.8% (-41.3 to 49.9) | $1,432 (-1,366 to 5,262) | -$119 (-226 to +42) | 145,810 |
+| XLF, held out | `opt_dgv_bounded_band` | 28.2% (-15.5 to 51.6) | $2,015 (-710 to 5,777) | -$60 (-186 to +112) | 97,996 |
+| XLF, held out | `opt_dgv_surface` | 40.3% (4.5 to 63.1) | $2,069 (-451 to 5,825) | -$103 (-203 to +34) | 98,566 |
+| SPY, in-sample | `opt_dgv_bounded` | 88.2% (78.5 to 94.4) | $26,689 (17,856 to 36,438) | -$814 (-1,222 to -361) | 184,021 |
+| SPY, in-sample | `opt_dgv_bounded_band` | 84.3% (75.6 to 91.8) | $25,534 (16,784 to 35,086) | -$766 (-1,174 to -319) | 126,923 |
+| SPY, in-sample | `opt_dgv_surface` | 87.9% (84.7 to 91.2) | $27,365 (17,714 to 36,720) | -$643 (-1,099 to -132) | 127,516 |
+
+Daily delta, for scale:
+
+| Symbol | Periods | Total P&L | Period stdev | ES 97.5% | Hedge cost |
+|---|---:|---:|---:|---:|---:|
+| DIA | 1,180 | -331,748 | 8,531 | 36,831 | 10,391 |
+| XLF | 967 | -249,545 | 2,301 | 9,598 | 8,588 |
+| SPY | 1,162 | +543,586 | 8,824 | 38,255 | 10,329 |
+
+### How to read this
+
+- **By the pre-registered rule, each fixed variant is a go on DIA and not confirmed on XLF.** Out of sample the effect is smaller than in-sample on SPY, 43% to 61% against 84% to 88%, so the SPY figures should not be quoted as the result.
+- **The data do not separate the three variants.** Their intervals overlap on every symbol, so none is picked here.
+- **The price of the risk reduction is the strangle's carry.** On DIA the fixed hedges lost $1.27 to $1.69 million against delta's $0.33 million over the period. Whether that trade is worth making is the desk's call, and this shows its size.
+- **Turnover fell twentyfold.** Across the three symbols the fixed variants traded 21 to 41 option contracts a period against 577 to 834 for `opt_dgv`, and on DIA their costs were $0.5 to $0.9 million against its $11.4 million.
+- **XLF is the weakest test.** Its free chain has few strikes near the money, so 231 of its 1,199 days could not be calibrated and fail closed, against 34 for SPY and 26 for DIA, and its held-out mark error is an RMS of $0.50 a share against a $0.045 median half-spread. That includes 2020-03-16, so XLF has no stress-day figure.
+- **It does not survive stress.** At three times quoted spreads on DIA, variance reduction is 16% to 20% and only `opt_dgv_bounded_band` clears the tail test, barely. On the long put overlay, no fixed variant's tail improvement clears zero on DIA or XLF, though variance falls 29% to 64%.
+- **It fades with horizon on DIA.** In the post-hoc horizon check, `chain_holdout_dia_horizons.json`, the reduction holds at 5 and 10 periods, 45% to 68%, but over 20 periods, about two months, it is 13% to 34% with intervals that include zero. The lag-one autocorrelation of each fixed variant's P&L difference from delta is between -0.04 and +0.06, so reversing mark noise does not explain these results.
+- **The stress day.** On the period ending 2020-03-16 the DIA strangle lost $106,879 delta hedged and $37,766 to $100,515 under the fixed variants. On SPY, in-sample, `opt_dgv_surface` lost $7,333 against delta's $59,031. One period each, so observations, not results.
+
+Every variant on every symbol is in `chain_run4_spy.json`, `chain_holdout_dia.json`, and `chain_holdout_xlf.json`.
+
+### What this does not establish
+
+- That the fix works in another market regime: the held-out symbols share SPY's calendar, and DIA moves closely with SPY.
+- That it works on a full listed chain. 92% to 99% of held option positions on DIA and SPY had a model mark at one end of a period, because the free source rarely quotes the same contract twice.
+- That any of the three is better than the others.
+
+## SPY chain run 3: the first test, and the no-go
+
+This is the run the no-go was decided on, before the fix.
+Run 4, above, corrected one flaw in it: its first period ran eight months, from the source's lone 2019 chain day, and was about 40% of daily delta's sum of squared period P&L.
+Without it daily delta's period stdev is $8,824 rather than $11,512, and `opt_dgv`'s variance against delta is -1,988% rather than -1,738%, so the no-go is stronger.
+The tables below are run 3's, as decided.
+
+### What was run
 
 Data, all free and with no account:
 
@@ -31,7 +112,7 @@ How each day is built, in `backtest/chains.py`:
 The next P&L period spans each skipped day.
 No policy failed to produce a hedge on any day.
 
-## Historical chains: results
+### Results
 
 Short strangle of 100 SPY lots, rolled monthly, over 1,163 P&L periods, in dollars at quoted spreads.
 A period runs from one chain day to the next, two or three calendar days, so these are not daily figures.
@@ -88,7 +169,7 @@ The long put overlay is reported because it was pre-registered, though, as in th
 There the lower-risk-aversion optimizer did reduce variance against delta, by 48% (2 to 66), with no established difference in tail or mean P&L, while the higher-risk-aversion one did not, at 25% (-84 to +68).
 Over five periods or more, the lower-risk-aversion one's interval also includes zero.
 
-## Why the optimizer failed here, and how sure that is
+### Why the optimizer failed here, and how sure that is
 
 **Costs are real and large.**
 The optimizer variants paid $1.3 to $2.7 million in spreads and fees against $10,329 for daily delta, on a book that made $907,508 unhedged, trading 460 to 820 option contracts a period on average.
@@ -131,28 +212,32 @@ In the current run no solve hit it.
 Every optimizer variant but one matches, to the dollar, an earlier run made while that variant had the machine to itself, and the exception was load-affected in both earlier runs.
 See `ledger.md`.
 
-## What would change the decision
+### What run 3 said would change the decision
 
 - **Fix the policy, then rerun as a new pre-registered variant.** Bound the hedge's gross option notional or penalize it, add skew and term-structure scenarios to the risk the optimizer sees, penalize the number of held legs, and rebalance options on a band rather than every period.
+  This was done, as above, except a penalty on the number of held legs: pricing each held leg's exit and capping gross contracts did that job.
 - **Better data.** A licensed chain with every listed strike, such as Cboe DataShop, ORATS, or OptionMetrics, would let held positions be marked at observed mids and would remove the strike-grid churn. That would also test whether the crash-day protection holds up across more stress periods.
+  This remains open.
 
-Until then the optimizer is a risk tool for reading a book's Greeks and scenarios, which phases 2 and 3 support, and not a hedging policy with evidence behind it.
-
-## Reproduce the chain run
+## Reproduce the chain runs
 
 ```sh
-uv run python scripts/fetch_dolthub_chains.py vendor_data/dolthub
 curl -L 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO' -o vendor_data/DGS3MO.csv
-uv run python scripts/run_chain_backtest.py vendor_data/dolthub/chains/SPY \
-  vendor_data/dolthub/SPY_dividends.csv vendor_data/DGS3MO.csv --out results.json --series series/
-uv run python scripts/analyze_chain_series.py series/ --out horizons.json
+for sym in SPY DIA XLF; do
+  dir=vendor_data/dolthub_$sym
+  uv run python scripts/fetch_dolthub_chains.py $dir --symbol $sym
+  uv run python scripts/run_chain_backtest.py $dir/chains/$sym $dir/${sym}_dividends.csv \
+    vendor_data/DGS3MO.csv --symbol $sym --out $sym.json --series series_$sym/
+  uv run python scripts/analyze_chain_series.py series_$sym/ --out ${sym}_horizons.json
+done
 ```
 
-The download takes about an hour, since each day needs its own query.
-The registered run probed every weekday, which is the fetch script's default.
-Only the full 16-variant run is the registered result.
+Each download takes one to two hours, since each day needs its own query.
+The registered runs probed every weekday, which is the fetch script's default.
+Only a full 25-variant run is a registered result.
 `--variants` runs a subset for diagnostics, and its results file records how many ran in `variants_run`.
-The full run takes several hours on 8 processes, most of it in the optimizer variants.
+A full run takes about two hours on 8 processes, most of it in the first optimizer variants.
+Run 3 had 16 variants and no gap rule; `chain_backtest.json` and `chain_horizons.json` are its files.
 DoltHub and FRED can revise their data, so a later download can differ.
 
 ## Proxy backtest, 2016 to 2026, with modeled option prices
