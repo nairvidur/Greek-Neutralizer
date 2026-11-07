@@ -6,9 +6,10 @@ Decision variables for each usable candidate i:
 For each target t: pos_t, neg_t >= 0, the absolute value of the residual exposure.
 For CVaR (Rockafellar-Uryasev): VaR level v (free) and tail excess u_s >= 0 per scenario.
 With position terms on (price_exit or max_gross_option_contracts), for each candidate i:
-    g_i >= |held_i + net trade_i|, in units, where held_i is what the book already holds of it
-The candidate's exit cost is charged on g_i, and the option g_i plus the book's other options are
-capped, so the program sees the position it leaves behind and not only the trade.
+    g_i >= |held_i + net trade_i|, in units, where held_i is the hedger's own held hedge in it
+The candidate's exit cost is charged on g_i, and the option g_i plus the held hedge options that
+are not candidates are capped, so the program sees the hedge it leaves behind and not only the
+trade. The client's book is never in held_i: a hedge that offsets it does not close it.
 
 Solved by HiGHS through scipy.optimize.milp. Every proposal is then re-verified through a separate
 path: the hedged book is repriced from scratch, and Greeks and bands are checked against what the
@@ -348,9 +349,9 @@ class _Program:
         self.positional = config.price_exit or config.max_gross_option_contracts is not None
         offered = {row.candidate.instrument.key: i for i, row in enumerate(usable)}
         self.held = np.zeros(self.n, dtype=np.float64)
-        # Options in the book that the program cannot trade, so their contracts count as fixed.
+        # Held hedge options the program cannot trade, so their contracts count as fixed.
         fixed: dict[str, int] = {}
-        for position in problem.book:
+        for position in problem.held_hedges:
             i = offered.get(position.instrument.key)
             if i is not None:
                 self.held[i] += position.quantity
@@ -1227,7 +1228,8 @@ def _limit_violations(problem: HedgeProblem, legs: tuple[HedgeLeg, ...]) -> list
         out.append(f"{len(legs)} legs is over the limit of {config.max_legs} legs")
     if config.max_gross_option_contracts is not None:
         net: dict[str, int] = {}
-        for position in (*problem.book, *(Position(leg.instrument, leg.quantity) for leg in legs)):
+        hedged = (*problem.held_hedges, *(Position(leg.instrument, leg.quantity) for leg in legs))
+        for position in hedged:
             if isinstance(position.instrument, OptionContract):
                 key = position.instrument.key
                 net[key] = net.get(key, 0) + position.quantity

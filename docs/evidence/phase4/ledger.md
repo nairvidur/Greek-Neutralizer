@@ -111,9 +111,10 @@ These findings were read from chain run 3's SPY series and from short SPY traces
 
 ### The fix
 
-- `HedgeConfig.price_exit` charges every candidate's half-spread and fee on the position it holds after the trade, the cost of closing it later.
-  Selling a held option then saves an exit, and opening an offsetting one adds a second.
-- `HedgeConfig.max_gross_option_contracts` caps the absolute option contracts of the whole hedged book, the book's own included.
+- `HedgeConfig.price_exit` charges every candidate's half-spread and fee on the hedger's position in it after the trade, the cost of closing it later.
+  Selling a held hedge then saves an exit, and opening an offsetting one adds a second.
+- `HedgeConfig.max_gross_option_contracts` caps the absolute option contracts of the hedger's position after the trade.
+- Both act on `HedgeProblem.held_hedges` plus the legs, never on the client's book, which a hedge does not close.
 - `OptimizerPolicy.gross_multiple` sets that cap each day at a multiple of the book's own option contracts.
 - `OptimizerPolicy.option_band` offers options only when residual gamma or vega is outside that share of the book's own, and otherwise hedges delta alone.
 - `SURFACE_SHAPE_SHOCKS` are six moves of the surface's shape at about one period's size: skew steeper and flatter by 0.10 a unit of log-moneyness, front vol up and down 3 points at a term power of 1, a 3% selloff with vol up 5 and skew steeper, and a 2% rally with vol down 2 and skew flatter.
@@ -123,13 +124,14 @@ These findings were read from chain run 3's SPY series and from short SPY traces
 
 | Policy | Targets | Risk aversion | Exit priced | Gross cap | Option band | CVaR |
 |---|---|---|---|---|---|---|
-| `opt_dgv_bounded` | delta, gamma, vega | 1.0 | yes | 2x the book's option contracts | none | none |
-| `opt_dgv_bounded_band` | delta, gamma, vega | 1.0 | yes | 2x | 0.5 | none |
-| `opt_dgv_surface` | delta, gamma, vega | 1.0 | yes | 2x | 0.5 | weight 1.0 at alpha 0.8 on `SURFACE_SHAPE_SHOCKS` |
+| `opt_dgv_bounded` | delta, gamma, vega | 1.0 | yes | hedges up to 1x the book's option contracts | none | none |
+| `opt_dgv_bounded_band` | delta, gamma, vega | 1.0 | yes | 1x | 0.5 | none |
+| `opt_dgv_surface` | delta, gamma, vega | 1.0 | yes | 1x | 0.5 | weight 1.0 at alpha 0.8 on `SURFACE_SHAPE_SHOCKS` |
 
 All other settings are the registered ones: up to 6 legs a trade, a 1% MIP gap, a 300-node limit, and the 600 second backstop.
 Each runs on the short strangle at spread multiples 1 and 3, and on the long put overlay at 1, beside the 16 earlier variants, which are rerun unchanged: 25 variants per symbol.
-The values 2x, 0.5, and the CVaR weight are judgment values, set before any run and not tuned.
+The values 1x, 0.5, and the CVaR weight are judgment values, set before any run and not tuned.
+If a cap is infeasible because the book shrank below its hedges by more than a day's displayed size can unwind, the policy re-solves with the cap at the hedges' current size, so they can shrink but not grow and the day's hedge is kept.
 
 ### Development run, disclosed
 
@@ -145,6 +147,16 @@ One run on SPY chain days from 2020-01-06 to 2021-06-30, at quoted spreads on th
 
 No setting was changed after it.
 It shows the cost of the fix as well as its benefit: the option hedges remove most of the variance, and with it most of the strangle's premium.
+It ran the first version of the fix, before the defect below was corrected.
+
+### Correction after entry, before any held-out run
+
+An independent review of the entered code found a defect, fixed before any held-out run.
+The first version charged the exit and counted the cap on the whole book, the client's positions included, netted with the hedges by instrument.
+A hedge that bought a client's short option was then priced as closing it, so it cost nothing, although the client still holds and closes its own leg; on the put overlay, whose 100,000 shares share a key with the stock hedge, selling shares was free.
+Both terms now act only on the hedger's held hedges and its trade, as above.
+The cap was 2x the whole hedged book's option contracts, netted; it is now 1x the book's for the hedges alone, which is the same 2x total without the netting.
+SPY chain run 4, started on the first version, was stopped and not read.
 
 ### Held-out test
 

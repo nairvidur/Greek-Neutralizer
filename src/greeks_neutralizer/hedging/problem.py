@@ -150,10 +150,10 @@ class HedgeConfig:
     max_linear_quote_gap: float = 0.25
     # Position terms, both off by default. Without them the objective prices only today's trade,
     # so a daily re-hedge adds legs and never unwinds offsetting ones: on historical chains that
-    # stacked 1,300 hedge contracts against a 200-contract book. `price_exit` also charges every
-    # candidate's half-spread and fee on the position held after the trade, the cost of closing it
-    # later. `max_gross_option_contracts` caps the absolute option contracts of the whole hedged
-    # book, the book's own options included.
+    # stacked 1,300 hedge contracts against a 200-contract book. Both act on the hedger's own
+    # position after the trade, HedgeProblem.held_hedges plus the legs, never on the client's
+    # book. `price_exit` charges each candidate's half-spread and fee on that position, the cost of
+    # closing it later. `max_gross_option_contracts` caps its absolute option contracts.
     price_exit: bool = False
     max_gross_option_contracts: int | None = None
 
@@ -275,8 +275,16 @@ class HedgeProblem:
     targets: tuple[GreekTarget, ...]
     scenarios: tuple[Scenario, ...] = ()
     config: HedgeConfig = field(default_factory=HedgeConfig)
+    # The hedger's own positions, which `book` also holds. The position terms act on these and the
+    # trade. The rest of `book` is the client's: a hedge that offsets a client position does not
+    # close it, so it is never netted against one.
+    held_hedges: tuple[Position, ...] = ()
 
     def __post_init__(self) -> None:
+        held = {p.instrument.key for p in self.book}
+        stray = sorted(p.instrument.key for p in self.held_hedges if p.instrument.key not in held)
+        if stray:
+            raise ValidationError(f"held hedges must also be in the book: {stray}")
         keys = [(t.underlying, t.greek) for t in self.targets]
         if len(keys) != len(set(keys)):
             raise ValidationError("duplicate target for the same underlying and Greek")

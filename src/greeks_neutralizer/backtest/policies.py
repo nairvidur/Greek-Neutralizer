@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 
 from greeks_neutralizer.backtest.engine import DayMarket, HedgePolicy
 from greeks_neutralizer.domain import LinearInstrument, OptionContract, Position
-from greeks_neutralizer.errors import SearchLimitError
+from greeks_neutralizer.errors import HedgeInfeasibleError, SearchLimitError
 from greeks_neutralizer.hedging.diagnostics import whalley_wilmott_band
 from greeks_neutralizer.hedging.optimizer import solve_hedge
 from greeks_neutralizer.hedging.problem import (
@@ -97,10 +97,11 @@ class OptimizerPolicy:
 
     Current hedges are offered back as candidates, so unwinding one pays its real spread.
 
-    `gross_multiple` caps the hedged book's gross option contracts at that multiple of the book's
-    own, so hedges can neither stack up nor grow past the risk they hedge. `option_band` trades
-    options only when residual gamma or vega is outside that share of the book's own: inside it,
-    only the linear hedge is offered, and the day's trade is a delta hedge.
+    `gross_multiple` caps the hedges' gross option contracts at that multiple of the book's own,
+    so hedges can neither stack up nor grow past the risk they hedge. Held hedges are passed as
+    the problem's `held_hedges`, so exit costs and the cap fall on them and never on the book.
+    `option_band` trades options only when residual gamma or vega is outside that share of the
+    book's own: inside it, only the linear hedge is offered, and the day's trade is a delta hedge.
     """
 
     name: str
@@ -122,22 +123,31 @@ class OptimizerPolicy:
         options_offered = self.option_band is None or not self._inside_band(day, book, hedges)
         if not options_offered:
             candidates = tuple(c for c in candidates if isinstance(c.instrument, LinearInstrument))
-        config = self.config
-        # With no options offered the cap cannot be acted on, so it is left off rather than
-        # failing a delta-only day on hedges held from before the book shrank.
-        if self.gross_multiple is not None and options_offered:
-            own = sum(abs(p.quantity) for p in book if isinstance(p.instrument, OptionContract))
-            config = replace(
-                config, max_gross_option_contracts=math.floor(self.gross_multiple * own)
-            )
         problem = HedgeProblem(
             (*book, *hedges),
             candidates,
             self.targets,
             self.scenarios,
-            config,
+            self.config,
+            tuple(hedges),
         )
-        proposal = solve_hedge(problem, day.snapshot)
+        # With no options offered the cap cannot be acted on, so it is left off rather than
+        # failing a delta-only day on hedges held from before the book shrank.
+        if self.gross_multiple is None or not options_offered:
+            proposal = solve_hedge(problem, day.snapshot)
+        else:
+            own = _option_contracts(book)
+            capped = replace(
+                self.config, max_gross_option_contracts=math.floor(self.gross_multiple * own)
+            )
+            try:
+                proposal = solve_hedge(replace(problem, config=capped), day.snapshot)
+            except HedgeInfeasibleError:
+                # The book shrank below its hedges, by more than the displayed size can unwind in a
+                # day. The hedges may then shrink but not grow, which is always feasible for the
+                # cap, so the day's delta hedge is not lost with it.
+                held = replace(self.config, max_gross_option_contracts=_option_contracts(hedges))
+                proposal = solve_hedge(replace(problem, config=held), day.snapshot)
         timed_out = [i for i in proposal.issues if i.startswith("SOLVER_TIME_LIMIT")]
         if timed_out:
             # Its hedge depends on how loaded the machine was, so trading it would make the
@@ -161,6 +171,16 @@ class OptimizerPolicy:
                 if abs(float(getattr(residual, greek.value))) > limit:
                     return False
         return True
+
+
+def _option_contracts(positions: Sequence[Position]) -> int:
+    """Absolute option contracts, netted per instrument."""
+    net: dict[str, int] = {}
+    for position in positions:
+        if isinstance(position.instrument, OptionContract):
+            key = position.instrument.key
+            net[key] = net.get(key, 0) + position.quantity
+    return sum(abs(q) for q in net.values())
 
 
 def _exposure(day: DayMarket, positions: Sequence[Position], underlying: str) -> Exposure:
@@ -191,7 +211,8 @@ POSITION_AWARE_POLICIES = (
     "opt_dgv_bounded_band",
     "opt_dgv_surface",
 )
-_GROSS_MULTIPLE = 2.0
+# Hedge option contracts up to the book's own, so the hedged book holds at most twice the book's.
+_GROSS_MULTIPLE = 1.0
 _OPTION_BAND = 0.5
 
 

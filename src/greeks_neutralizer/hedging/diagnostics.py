@@ -360,7 +360,9 @@ def _delta_only_problem(problem: HedgeProblem, snapshot: MarketSnapshot) -> Hedg
         ticket_cost=0.0,
         premium_budget=None,
     )
-    return HedgeProblem(problem.book, linear, targets, problem.scenarios, config)
+    return HedgeProblem(
+        problem.book, linear, targets, problem.scenarios, config, problem.held_hedges
+    )
 
 
 def _point(
