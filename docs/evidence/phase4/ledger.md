@@ -93,7 +93,77 @@ Gate decision, fixed in advance as the proxy README states it: **go** if option-
 
 None of these was aimed at a result, and every variant was rerun.
 
+## Position-aware optimizer, pre-registered
+
+Entered here, and committed, before any run on the held-out symbols.
+
+### Diagnosis, made on SPY after the no-go
+
+These findings were read from chain run 3's SPY series and from short SPY traces, so they are in-sample.
+
+- Twenty of 1,163 periods carry 74% of the squared difference between `opt_dgv`'s period P&L and daily delta's.
+- The objective priced only the day's trade, never the position left behind.
+  Each day the grid offered new contracts, the policy added legs, and it never unwound offsetting ones, because unwinding paid a spread and holding cost nothing.
+  On one March 2026 trace the hedges held 28 legs and 1,313 contracts against a 200-contract book, with seven expiries.
+- That gross position is flat in net delta, gamma, and 30-day vega, but it carries skew and term-structure risk those Greeks do not see, and most of it is marked from the model.
+- Separately, the source has one SPY chain day in 2019, 2019-05-10, then none until 2020-01-06, so chain run 3's first period spans eight months.
+  It is about 40% of daily delta's sum of squared period P&L, so it inflated the baseline every policy was compared with, and the optimizer's no-go is stronger without it.
+
+### The fix
+
+- `HedgeConfig.price_exit` charges every candidate's half-spread and fee on the position it holds after the trade, the cost of closing it later.
+  Selling a held option then saves an exit, and opening an offsetting one adds a second.
+- `HedgeConfig.max_gross_option_contracts` caps the absolute option contracts of the whole hedged book, the book's own included.
+- `OptimizerPolicy.gross_multiple` sets that cap each day at a multiple of the book's own option contracts.
+- `OptimizerPolicy.option_band` offers options only when residual gamma or vega is outside that share of the book's own, and otherwise hedges delta alone.
+- `SURFACE_SHAPE_SHOCKS` are six moves of the surface's shape at about one period's size: skew steeper and flatter by 0.10 a unit of log-moneyness, front vol up and down 3 points at a term power of 1, a 3% selloff with vol up 5 and skew steeper, and a 2% rally with vol down 2 and skew flatter.
+- Chain runs now start after the last gap of more than 15 calendar days between chain days, and the dropped days are listed in the output.
+
+### Variants
+
+| Policy | Targets | Risk aversion | Exit priced | Gross cap | Option band | CVaR |
+|---|---|---|---|---|---|---|
+| `opt_dgv_bounded` | delta, gamma, vega | 1.0 | yes | 2x the book's option contracts | none | none |
+| `opt_dgv_bounded_band` | delta, gamma, vega | 1.0 | yes | 2x | 0.5 | none |
+| `opt_dgv_surface` | delta, gamma, vega | 1.0 | yes | 2x | 0.5 | weight 1.0 at alpha 0.8 on `SURFACE_SHAPE_SHOCKS` |
+
+All other settings are the registered ones: up to 6 legs a trade, a 1% MIP gap, a 300-node limit, and the 600 second backstop.
+Each runs on the short strangle at spread multiples 1 and 3, and on the long put overlay at 1, beside the 16 earlier variants, which are rerun unchanged: 25 variants per symbol.
+The values 2x, 0.5, and the CVaR weight are judgment values, set before any run and not tuned.
+
+### Development run, disclosed
+
+One run on SPY chain days from 2020-01-06 to 2021-06-30, at quoted spreads on the short strangle, with these exact settings, was read before this entry.
+
+| Policy | Periods | Stdev | Variance reduction vs delta | Total P&L | Hedge cost |
+|---|---|---|---|---|---|
+| `delta_daily` | 213 | 9,085 | 0 | 114,755 | 2,034 |
+| `opt_dgv` | 213 | 22,028 | -488% | -836,964 | 460,986 |
+| `opt_dgv_bounded` | 213 | 1,913 | 95.6% | -65,699 | 36,789 |
+| `opt_dgv_bounded_band` | 213 | 2,379 | 93.1% | -61,707 | 23,470 |
+| `opt_dgv_surface` | 213 | 2,284 | 93.7% | -28,148 | 40,381 |
+
+No setting was changed after it.
+It shows the cost of the fix as well as its benefit: the option hedges remove most of the variance, and with it most of the strangle's premium.
+
+### Held-out test
+
+- Symbols: DIA, primary, and XLF, secondary: of the ETFs probed, the only two besides SPY that the free source carries.
+  QQQ, IWM, EEM, GLD, and TLT have no chains there.
+  Their chains were downloaded, but no backtest was run on them before this entry.
+- Period: every chain day each source has from 2019-01-01 to 2026-10-31, after the 15-day gap rule.
+  It is the same calendar period as SPY, so the market regime is shared, and only the instrument, its quotes, and its contracts are held out.
+- Books, costs, fees, quote sizes, dividends, rates, stress days, and bootstrap: as for SPY, at the same contract counts, 100 lots and 100,000 shares.
+  XLF trades at about a twelfth of SPY's price, so its book is smaller in dollars, and the $0.50 fee is larger against its premiums.
+- Gate for each new variant, decided on DIA at quoted spreads on the short strangle: **go** if its variance reduction and its 97.5% ES improvement against daily delta both have 95% intervals above zero, and **no-go** otherwise.
+  XLF is reported as a second test: a go on DIA that fails on XLF is reported as not confirmed.
+- With three variants, one may pass by chance; every variant's result is reported.
+- Not a gate, but stated with any decision: the mean P&L difference against daily delta, with its interval, which is the carry the hedge gives up.
+  Removing a strangle's risk removes much of its premium, so a go says the hedge reduces risk at a measured cost, not that it pays.
+- SPY is rerun with all 25 variants under the gap rule as chain run 4. Its results for the new variants are in-sample, and are labeled so.
+
 ## Promotion rule
 
 Nothing here is promoted to a recommended default.
 The chain run gave no-go, so promotion now needs a fixed policy, entered here as a new pre-registered variant before it runs, then a paper pilot.
+The position-aware variants above are that entry: a go on the held-out test makes one eligible for a paper pilot, not a default.

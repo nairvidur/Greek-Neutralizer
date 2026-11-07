@@ -148,6 +148,14 @@ class HedgeConfig:
     max_lots_per_leg: int = 5000
     max_model_quote_vol_gap: float = 0.05
     max_linear_quote_gap: float = 0.25
+    # Position terms, both off by default. Without them the objective prices only today's trade,
+    # so a daily re-hedge adds legs and never unwinds offsetting ones: on historical chains that
+    # stacked 1,300 hedge contracts against a 200-contract book. `price_exit` also charges every
+    # candidate's half-spread and fee on the position held after the trade, the cost of closing it
+    # later. `max_gross_option_contracts` caps the absolute option contracts of the whole hedged
+    # book, the book's own options included.
+    price_exit: bool = False
+    max_gross_option_contracts: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -167,7 +175,11 @@ class HedgeConfig:
             require_finite("premium_budget", self.premium_budget)
         if not isinstance(self.max_quote_age, timedelta):
             raise ValidationError(f"max_quote_age must be a timedelta, got {self.max_quote_age!r}")
-        for name in ("require_quote_size", "allow_extrapolated_vol"):
+        if self.max_gross_option_contracts is not None:
+            require_int("max_gross_option_contracts", self.max_gross_option_contracts)
+            if self.max_gross_option_contracts < 0:
+                raise ValidationError("max_gross_option_contracts must be non-negative")
+        for name in ("require_quote_size", "allow_extrapolated_vol", "price_exit"):
             if not isinstance(getattr(self, name), bool):
                 raise ValidationError(f"{name} must be true or false")
         if isinstance(self.mip_node_limit, bool) or not isinstance(self.mip_node_limit, int):
