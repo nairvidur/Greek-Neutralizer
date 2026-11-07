@@ -258,6 +258,8 @@ def test_model_and_quotes_disagreeing_broadly_fails_closed():
         {"risk_aversion": float("inf")},
         {"allow_extrapolated_vol": "false"},
         {"require_quote_size": "no"},
+        {"price_exit": "yes"},
+        {"max_gross_option_contracts": 10.5},
     ],
     ids=lambda d: next(iter(d)),
 )
