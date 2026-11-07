@@ -345,6 +345,8 @@ def _parse_config(data: Any, gate_defaults: HedgeConfig) -> HedgeConfig:
         "max_lots_per_leg",
         "max_model_quote_vol_gap",
         "max_linear_quote_gap",
+        "price_exit",
+        "max_gross_option_contracts",
     }
     check_fields(d, "config", set(), allowed)
     if "max_quote_age_seconds" in d:

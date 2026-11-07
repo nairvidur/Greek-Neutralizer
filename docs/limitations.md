@@ -5,7 +5,12 @@ This is alpha software, and **it has not been used to hedge real money.**
 
 ## Evidence
 
-- **The option-hedge optimizer failed its historical-chain backtest.** On free SPY chains from 2019 to 2026 it had several times the variance of daily delta hedging and paid far more in costs, so it is not evidence-backed as a hedging policy. Most marks in that run came from the calibrated surface, because the free source rarely quotes the same contract twice, and the audit of those marks is in `docs/evidence/phase4/`.
+- **The option-hedge optimizer has not shown it beats daily delta robustly.** As first configured it failed its historical-chain backtest: on free SPY chains it had many times the variance of daily delta hedging and paid far more in costs.
+  With `price_exit` and a gross option cap it passed a pre-registered held-out test on DIA, but XLF did not confirm the tail improvement, and the DIA result weakens at three times quoted spreads, on the put overlay, and over two-month horizons.
+  It also gives up most of a short strangle's carry.
+  Use those settings for any repeated re-hedge, and treat it as a paper-pilot candidate, not a default.
+  Most marks in these runs came from the calibrated surface, because the free source rarely quotes the same contract twice, and the audit of those marks is in `docs/evidence/phase4/`.
+- **The position terms need the hedger's holdings.** `price_exit` and `max_gross_option_contracts` act on `HedgeProblem.held_hedges` and the trade. A request through the service or CLI cannot yet name its held hedges, so there they act on the new trade alone.
 - **No live or paper pilot, and no reconciliation to broker or clearing statements.**
 - **No independent validation.** Every review here was automated, and only one day's real chain has been reconciled.
 

@@ -387,6 +387,19 @@ HYPOTHETICAL_SHOCKS: tuple[Scenario, ...] = (
     Scenario("one week of decay", days_forward=7.0),
 )
 
+# Moves of the surface's shape at about one period's size, which a book flat in delta, gamma, and
+# 30-day vega can still lose on: offsetting options at other strikes or expiries carry skew and
+# term-structure risk that those Greeks do not see. Daily changes in an index's one-month 25-delta
+# risk reversal of about a vol point are a skew slope of about 0.1 a unit of log-moneyness.
+SURFACE_SHAPE_SHOCKS: tuple[Scenario, ...] = (
+    Scenario("skew steepens", skew_shock=-0.10),
+    Scenario("skew flattens", skew_shock=0.10),
+    Scenario("front vol up", vol_shock=0.03, term_power=1.0),
+    Scenario("front vol down", vol_shock=-0.03, term_power=1.0),
+    Scenario("selloff", spot_shock=-0.03, vol_shock=0.05, skew_shock=-0.10),
+    Scenario("rally", spot_shock=0.02, vol_shock=-0.02, skew_shock=0.05),
+)
+
 
 def spot_vol_grid(
     spot_shocks: Sequence[float] = (-0.2, -0.1, -0.05, -0.02, -0.01, 0.0, 0.01, 0.02, 0.05, 0.1),

@@ -5,6 +5,11 @@ Decision variables for each usable candidate i:
     used_i in {0, 1}                                          only with max_legs or a ticket cost
 For each target t: pos_t, neg_t >= 0, the absolute value of the residual exposure.
 For CVaR (Rockafellar-Uryasev): VaR level v (free) and tail excess u_s >= 0 per scenario.
+With position terms on (price_exit or max_gross_option_contracts), for each candidate i:
+    g_i >= |held_i + net trade_i|, in units, where held_i is the hedger's own held hedge in it
+The candidate's exit cost is charged on g_i, and the option g_i plus the held hedge options that
+are not candidates are capped, so the program sees the hedge it leaves behind and not only the
+trade. The client's book is never in held_i: a hedge that offsets it does not close it.
 
 Solved by HiGHS through scipy.optimize.milp. Every proposal is then re-verified through a separate
 path: the hedged book is repriced from scratch, and Greeks and bands are checked against what the
@@ -341,6 +346,22 @@ class _Program:
         self.ns = len(problem.scenarios) if problem.config.cvar_weight > 0.0 else 0
         config = problem.config
         self.use_binary = config.max_legs is not None or config.ticket_cost > 0.0
+        self.positional = config.price_exit or config.max_gross_option_contracts is not None
+        offered = {row.candidate.instrument.key: i for i, row in enumerate(usable)}
+        self.held = np.zeros(self.n, dtype=np.float64)
+        # Held hedge options the program cannot trade, so their contracts count as fixed.
+        fixed: dict[str, int] = {}
+        for position in problem.held_hedges:
+            i = offered.get(position.instrument.key)
+            if i is not None:
+                self.held[i] += position.quantity
+            elif isinstance(position.instrument, OptionContract):
+                key = position.instrument.key
+                fixed[key] = fixed.get(key, 0) + position.quantity
+        self.fixed_option_contracts = float(sum(abs(q) for q in fixed.values()))
+        self._is_option = np.array(
+            [isinstance(row.candidate.instrument, OptionContract) for row in usable], dtype=bool
+        )
 
         # Exposures by target and candidate, so that evaluating a trial touches only held legs.
         self._book_row = np.array([self.book_value(t) for t in self.targets], dtype=np.float64)
@@ -349,13 +370,15 @@ class _Program:
             dtype=np.float64,
         ).reshape(self.nt, self.n)
 
-        # Columns: 4n trade tiers, optional n binaries, 2nt abs parts, then CVaR v and u_s.
+        # Columns: 4n trade tiers, optional n binaries, 2nt abs parts, CVaR v and u_s, then the
+        # optional n absolute positions.
         self.i_trade = 0
         self.i_used = 4 * self.n
         self.i_abs = self.i_used + (self.n if self.use_binary else 0)
         self.i_v = self.i_abs + 2 * self.nt
         self.i_u = self.i_v + (1 if self.ns else 0)
-        self.size = self.i_u + self.ns
+        self.i_pos = self.i_u + self.ns
+        self.size = self.i_pos + (self.n if self.positional else 0)
 
     def _exposure_column(self, target: GreekTarget, row: _Usable) -> float:
         if row.candidate.instrument.underlying != target.underlying:
@@ -390,6 +413,8 @@ class _Program:
             c[4 * i + 3] = lot * (row.sell_cost_touch + impact + basis)
             if self.use_binary:
                 c[self.i_used + i] = config.ticket_cost
+            if self.positional and config.price_exit:
+                c[self.i_pos + i] = self._exit_cost(i)
         for t, target in enumerate(self.targets):
             # The absolute-value columns are in units of the scaled row.
             penalty = config.risk_aversion * target.effective_weight * self._row_scale(target)
@@ -406,6 +431,15 @@ class _Program:
                 "candidate fees, impact, and lot sizes"
             )
         return c
+
+    def _exit_cost(self, i: int) -> float:
+        """Dollars a unit to close candidate i later at today's touch: half spread plus fee."""
+        return self.usable[i].sell_cost_touch
+
+    def _position_cap(self) -> float | None:
+        """Option contracts the candidates may hold between them, or None with no cap."""
+        cap = self.problem.config.max_gross_option_contracts
+        return None if cap is None else float(cap) - self.fixed_option_contracts
 
     def _variable_bounds(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         lb = np.zeros(self.size, dtype=np.float64)
@@ -479,6 +513,19 @@ class _Program:
             if config.max_legs is not None and not elastic:
                 terms = {self.i_used + i: 1.0 for i in range(self.n)}
                 add(terms, 0.0, float(config.max_legs), "max_legs")
+
+        if self.positional:
+            for i in range(self.n):
+                # g_i >= held_i + trade_i and g_i >= -(held_i + trade_i).
+                held = float(self.held[i])
+                for sign in (1.0, -1.0):
+                    terms = {col: -sign * units for col, units in self._net_units(i).items()}
+                    terms[self.i_pos + i] = 1.0
+                    add(terms, sign * held, np.inf, f"position:{i}")
+            gross_cap = self._position_cap()
+            if gross_cap is not None and not elastic:
+                terms = {self.i_pos + i: 1.0 for i in range(self.n) if self._is_option[i]}
+                add(terms, -np.inf, gross_cap, "max_gross_option_contracts")
 
         for s in range(self.ns):
             # u_s >= loss_s - v, where loss_s = -(book_pnl_s + sum x_i pnl_is)
@@ -672,6 +719,13 @@ class _Program:
             return float("inf")
         if self.use_binary:
             total += legs * config.ticket_cost
+        if self.positional:
+            after = np.abs(self.held + lots.astype(np.float64))
+            cap = self._position_cap()
+            if cap is not None and float(after[self._is_option].sum()) > cap + 1e-9:
+                return float("inf")
+            if config.price_exit:
+                total += sum(self._exit_cost(i) * float(after[i]) for i in range(self.n))
         for t, target in enumerate(self.targets):
             value = self._book_row[t] + float(self._exposures[t, held] @ lots[held])
             if target.lower is not None and value < target.lower - 1e-9:
@@ -964,7 +1018,8 @@ class _Program:
         config = self.problem.config
         banded = [t for t in self.targets if t.lower is not None or t.upper is not None]
         budget = config.premium_budget
-        extra = 2 * len(banded) + (1 if budget is not None else 0)
+        gross_cap = self._position_cap()
+        extra = 2 * len(banded) + (1 if budget is not None else 0) + (gross_cap is not None)
         base_constraints, _ = self._constraints(elastic=True)
         size = self.size + extra
         rows: list[int] = []
@@ -1023,9 +1078,24 @@ class _Program:
             labels.append("premium budget over by {:.2f}")
             reaches.append(unseen_reach(lambda row: row.mid_value))
             next_slack += 1
+        if gross_cap is not None:
+            # Unit coefficients, which the solver cannot drop, so any shortfall is real.
+            r = len(lo)
+            for i in np.flatnonzero(self._is_option):
+                rows.append(r)
+                cols.append(self.i_pos + int(i))
+                vals.append(1.0)
+            rows.append(r)
+            cols.append(next_slack)
+            vals.append(-1.0)
+            lo.append(-np.inf)
+            hi.append(gross_cap)
+            labels.append("gross option contracts over the limit by {:.2f}")
+            reaches.append(0.0)
+            next_slack += 1
 
         if not lo:
-            return ("infeasible with no bands or budget: check candidate capacity",), False
+            return ("infeasible with no bands, budget, or gross cap: check capacity",), False
 
         lb, ub = self._variable_bounds()
         lb = np.concatenate([lb, np.zeros(extra)])
@@ -1060,7 +1130,13 @@ class _Program:
             label.format(value) for label, value in zip(labels, slack, strict=True) if value > 1e-6
         )
         real = any(value > max(1e-6, reach) for value, reach in zip(slack, reaches, strict=True))
-        if config.max_legs is None:
+        if config.max_gross_option_contracts is not None:
+            unbound = (
+                "no band is short as a continuous problem without the limit of "
+                f"{config.max_gross_option_contracts} gross option contracts: raise it, or "
+                "check max_legs and whole lots"
+            )
+        elif config.max_legs is None:
             unbound = "infeasible only under integer lots: widen a band by one contract's size"
         else:
             unbound = (
@@ -1150,6 +1226,19 @@ def _limit_violations(problem: HedgeProblem, legs: tuple[HedgeLeg, ...]) -> list
         out.append(f"net premium {premium:,.2f} is over the budget of {config.premium_budget:,.2f}")
     if config.max_legs is not None and len(legs) > config.max_legs:
         out.append(f"{len(legs)} legs is over the limit of {config.max_legs} legs")
+    if config.max_gross_option_contracts is not None:
+        net: dict[str, int] = {}
+        hedged = (*problem.held_hedges, *(Position(leg.instrument, leg.quantity) for leg in legs))
+        for position in hedged:
+            if isinstance(position.instrument, OptionContract):
+                key = position.instrument.key
+                net[key] = net.get(key, 0) + position.quantity
+        gross = sum(abs(q) for q in net.values())
+        if gross > config.max_gross_option_contracts:
+            out.append(
+                f"{gross} gross option contracts is over the limit of "
+                f"{config.max_gross_option_contracts}"
+            )
     candidates = {c.instrument.key: c for c in problem.candidates}
     for leg in legs:
         candidate = candidates.get(leg.instrument.key)

@@ -8,14 +8,15 @@ A gate met only by proxy is reported as open.
 | 1. Foundations | Clean wheel install, and a regression test per baseline defect | **Met** | `phase1/` |
 | 2. Listed options analytics | Reconciled with QuantLib and a real chain | **Met**, with limitations | `phase2/` |
 | 3. Optimizer and risk | Independent verification, and stress reviewed | **Met**, with limitations | `phase3/` |
-| 4. Evidence | Out-of-sample report on chains, net of costs | **Met on free chains, with a no-go** for the option-hedge optimizer; daily delta stays the baseline | `phase4/` |
+| 4. Evidence | Out-of-sample report on chains, net of costs | **Met on free chains.** No-go for the optimizer as first configured; its position-aware fix is a go on held-out DIA, not confirmed on XLF, at a measured cost in carry; daily delta stays the default | `phase4/` |
 | 5. Product | Browser workflow, load test, restore drill, threat model | **Met on one machine**, not on a real deployment | `phase5/` |
 | 6. Pilot | Shadow mode, independent validation, pen test | **Not started:** needs people and partners | |
 | 7. Expansion | Futures options, FX, rates, commodities, crypto | **Not started** | |
 
 Phase 5 went ahead with phase 4 open, because that gate then seemed to need purchased data, and building a workflow risks no money.
 That is a departure from running the phases strictly in order.
-Phase 4 has since been run on free historical chains, and its no-go means the optimizer is not offered as a hedging policy until a fixed version passes a new pre-registered run.
+Phase 4 has since been run on free historical chains.
+Its no-go led to a position-aware fix, which passed a pre-registered held-out test on DIA and was not confirmed on XLF, so it is eligible for the phase 6 paper pilot and is not a default.
 
 ## What needs a human
 

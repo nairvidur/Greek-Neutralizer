@@ -2,6 +2,7 @@
 """Run the pre-registered backtest on historical option chains. Every variant is reported.
 
 Usage: run_chain_backtest.py <chain_dir> <dividends.csv> <DGS3MO.csv> --out results.json
+       [--symbol SPY]
 
 <chain_dir> holds one <date>.csv per day from scripts/fetch_dolthub_chains.py, and DGS3MO.csv is
 FRED's 3-month Treasury series. The books, policies, and spread multiples are the proxy's
@@ -10,6 +11,10 @@ so 100 SPY lots stand in for 10 SPX lots. They were fixed before this script fir
 changing them means recording the reason in docs/evidence/phase4/ledger.md.
 
 Option bid and ask are real, so a spread multiple of 1 is the quoted spread, and 3 is a stress.
+
+The position-aware optimizer variants were added after the SPY no-go and designed on SPY, so their
+SPY results are in-sample. Their test is on DIA and XLF, held out until the variants were entered
+in the ledger. Every symbol uses the same book sizes and settings.
 """
 
 from __future__ import annotations
@@ -38,12 +43,16 @@ from greeks_neutralizer.backtest.chains import (
     load_dividends,
 )
 from greeks_neutralizer.backtest.engine import BacktestResult, BookStrategy, run_backtest
-from greeks_neutralizer.backtest.policies import registered_policy
+from greeks_neutralizer.backtest.policies import POSITION_AWARE_POLICIES, registered_policy
 from greeks_neutralizer.backtest.proxy import load_fred_series
 from greeks_neutralizer.backtest.report import compare, policy_stats, stress_days
 from greeks_neutralizer.errors import GNError
 
-SYMBOL = "SPY"
+DEFAULT_SYMBOL = "SPY"
+# The history starts at the first chain day after which no gap to the next exceeds this. SPY's
+# source has one chain day in 2019, then none until 2020, which made a first "period" of eight
+# months that was about 40% of daily delta's variance in the first chain run.
+MAX_GAP_DAYS = 15
 # The chain market has no trailing state to form, unlike the proxy's long-run vol level.
 WARMUP_DAYS = 0
 # The proxy's stress dates that fall inside the chain history, fixed in advance.
@@ -83,11 +92,22 @@ VARIANTS: tuple[Variant, ...] = (
         Variant("long_put_overlay", policy, 1.0)
         for policy in ("unhedged", "delta_daily", "opt_dgv", "opt_dgv_cheap")
     ),
+    # Added after the SPY no-go, as entered in the ledger before the held-out runs.
+    *(
+        Variant(book, policy, multiple)
+        for book, multiple in (
+            ("short_strangle", 1.0),
+            ("short_strangle", 3.0),
+            ("long_put_overlay", 1.0),
+        )
+        for policy in POSITION_AWARE_POLICIES
+    ),
 )
 
 
 @dataclass(frozen=True, slots=True)
 class Inputs:
+    symbol: str
     files: tuple[Path, ...]
     rates_pct: dict[date, float]
     dividends: tuple[tuple[date, float], ...]
@@ -103,25 +123,39 @@ class Outcome:
     seconds: float
 
 
-def book_for(name: str) -> BookStrategy:
+def book_for(name: str, symbol: str) -> BookStrategy:
     if name == "short_strangle":
-        return ChainShortStrangle(SYMBOL, lots=100)
+        return ChainShortStrangle(symbol, lots=100)
     if name == "long_put_overlay":
-        return ChainPutOverlay(SYMBOL, notional_shares=100_000)
+        return ChainPutOverlay(symbol, notional_shares=100_000)
     raise ValueError(name)
+
+
+def continuous_history(files: Sequence[Path], max_gap_days: int = MAX_GAP_DAYS) -> int:
+    """Index of the first chain day after which no gap to the next day exceeds max_gap_days."""
+    days = [date.fromisoformat(p.stem) for p in files]
+    start = 0
+    for i in range(1, len(days)):
+        if (days[i] - days[i - 1]).days > max_gap_days:
+            start = i
+    return start
 
 
 def _run(args: tuple[Variant, Inputs]) -> Outcome:
     variant, inputs = args
     start = time.perf_counter()
     market = ChainMarket(
-        SYMBOL,
+        inputs.symbol,
         inputs.files,
         inputs.rates_pct,
         inputs.dividends,
         spread_multiple=variant.spread_multiple,
     )
-    result = run_backtest(market, book_for(variant.book), registered_policy(variant.policy, SYMBOL))
+    result = run_backtest(
+        market,
+        book_for(variant.book, inputs.symbol),
+        registered_policy(variant.policy, inputs.symbol),
+    )
     return Outcome(
         variant,
         result,
@@ -134,7 +168,7 @@ def _run(args: tuple[Variant, Inputs]) -> Outcome:
 
 def _audit(args: tuple[Path, Inputs]) -> MarkAudit | str:
     path, inputs = args
-    market = ChainMarket(SYMBOL, (path,), inputs.rates_pct, inputs.dividends)
+    market = ChainMarket(inputs.symbol, (path,), inputs.rates_pct, inputs.dividends)
     try:
         return market.mark_audit(load_chain_day(path))
     except GNError as exc:
@@ -229,6 +263,7 @@ def main() -> None:
     parser.add_argument("rates", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--processes", type=int, default=8)
+    parser.add_argument("--symbol", default=DEFAULT_SYMBOL)
     parser.add_argument(
         "--series",
         type=Path,
@@ -242,11 +277,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    files = tuple(sorted(args.chains.glob("*.csv")))
-    if not files:
+    every = tuple(sorted(args.chains.glob("*.csv")))
+    if not every:
         raise SystemExit(f"no chain files in {args.chains}")
-    inputs = Inputs(files, load_fred_series(args.rates), load_dividends(args.dividends))
-    print(f"{len(files)} chain days, {files[0].stem} to {files[-1].stem}", flush=True)
+    start = continuous_history(every)
+    files = every[start:]
+    if len(files) < 2:
+        raise SystemExit(f"no continuous chain history in {args.chains}")
+    inputs = Inputs(
+        args.symbol, files, load_fred_series(args.rates), load_dividends(args.dividends)
+    )
+    print(
+        f"{args.symbol}: {len(files)} chain days, {files[0].stem} to {files[-1].stem}, "
+        f"{start} leading days dropped",
+        flush=True,
+    )
 
     selected = select_variants(args.variants)
     outcomes: list[Outcome] = []
@@ -288,7 +333,12 @@ def main() -> None:
         ),
         "source": "DoltHub post-no-preference/options and post-no-preference/stocks; FRED DGS3MO",
         "code_version": __version__,
+        "symbol": args.symbol,
         "chain_days": [files[0].stem, files[-1].stem, len(files)],
+        "dropped_leading_days": {
+            "rule": f"history starts after the last gap over {MAX_GAP_DAYS} calendar days",
+            "days": [p.stem for p in every[:start]],
+        },
         "skipped_days": len(skipped),
         "skipped_by_reason": dict(sorted(reasons.items())),
         "first_skipped": [f"{s.day}: {s.reason}" for s in skipped[:5]],

@@ -453,3 +453,13 @@ def test_tickets_match_the_proposal(proposal):
         assert f"38={abs(leg.quantity)}|" in message
         assert ("54=1|" if leg.quantity > 0 else "54=2|") in message
         assert "40=2|" in message
+
+
+def test_request_can_turn_on_the_position_terms():
+    """A request reaches the optimizer's position terms, which are off unless asked for."""
+    request = example_request()
+    assert parse_hedge_request(request)[0].config.price_exit is False
+    request["config"].update(price_exit=True, max_gross_option_contracts=40)
+    config = parse_hedge_request(request)[0].config
+    assert config.price_exit is True
+    assert config.max_gross_option_contracts == 40

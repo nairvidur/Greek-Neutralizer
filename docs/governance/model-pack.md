@@ -43,7 +43,8 @@ See `docs/evidence/`.
 | Real SPX and SPY chain against Cboe's reported values | IV within 0.10 and 0.19 vol pts, median |
 | Hedged book against QuantLib | Greeks within about 1e-11 |
 | Backtest on real paths with modeled option prices | See `docs/evidence/phase4/` |
-| Backtest on free historical SPY chains | No-go for the optimizer against daily delta; see `docs/evidence/phase4/` |
+| Backtest on free historical SPY chains | No-go for the optimizer as first configured, against daily delta; see `docs/evidence/phase4/` |
+| Position-aware optimizer, held out on DIA and XLF | Go on DIA, not confirmed on XLF; eligible for a paper pilot, not a default |
 
 ## Testing NOT performed
 

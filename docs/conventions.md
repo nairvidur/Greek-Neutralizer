@@ -92,3 +92,17 @@ These are judgment values and are meant to be set by the desk.
 
 Premium paid at mid is not a cost, because it buys an asset worth that much.
 The cost of a hedge is the half-spread, fees, and impact.
+
+By default the objective prices only the trade, not the position it leaves.
+Re-hedged every day, that stacks offsetting legs: on historical SPY chains it held 1,313 contracts against a 200-contract book, flat in net Greeks but exposed to skew and term structure.
+Two position terms, off by default, address it:
+
+- `price_exit` adds each candidate's half-spread and fee on the hedger's position in it after the trade, the cost of closing it later.
+  Selling a held hedge then saves an exit, while opening an offsetting one adds a second.
+- `max_gross_option_contracts` caps the absolute option contracts of the hedger's position after the trade.
+  Held hedge options that are not candidates count against it as they stand, so a cap below them is infeasible and is reported as over the limit by that much.
+
+Both act on the problem's `held_hedges`, the hedger's own positions, which the book also holds, plus the trade.
+They never act on the rest of the book, the client's: a hedge that offsets a client position does not close it, so the two are not netted.
+With no `held_hedges`, as in a one-off request, they act on the trade alone: the exit doubles the cost of what is opened, and the cap limits it.
+The exit cost on held hedges that do not trade is a constant, so it shifts the objective and dilutes the relative MIP gap, but it does not change the hedge.
