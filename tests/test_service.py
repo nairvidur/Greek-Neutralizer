@@ -279,3 +279,64 @@ def test_clean_makes_values_json_safe():
     )
     assert cleaned == {"a": None, "b": [1.5, None], "c": 3, "d": True}
     assert json.dumps(cleaned)
+
+
+def _held_put_request(*, as_held: bool):
+    """The hedger already holds 8 of the 95 put candidate, and may hold no options after the trade.
+
+    As a held hedge it is the hedger's, so the cap of 0 forces it out. In the book it is the
+    client's, which the cap never touches, so the cap only stops new options.
+    """
+    request = quick_request()
+    put = request["candidates"][2]["instrument"]
+    held = [{"instrument": put, "quantity": 8}]
+    if as_held:
+        request["held_hedges"] = held
+    else:
+        request["book"] = [*request["book"], *held]
+    request["config"].update(max_gross_option_contracts=0)
+    return request, put
+
+
+def _option_legs(body):
+    return {
+        (leg["instrument"]["right"], leg["instrument"]["strike"]): leg["quantity"]
+        for leg in body["legs"]
+        if leg["instrument"]["type"] == "option"
+    }
+
+
+def test_a_request_can_name_its_held_hedges(client):
+    request, put = _held_put_request(as_held=True)
+    response = client.post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["verification"]["passed"] is True
+    assert _option_legs(body) == {(put["right"], put["strike"]): -8}
+
+
+def test_a_client_position_is_not_a_held_hedge(client):
+    request, _ = _held_put_request(as_held=False)
+    response = client.post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 200, response.text
+    assert _option_legs(response.json()) == {}
+
+
+_STOCK = {"type": "linear", "symbol": "XYZ", "underlying": "XYZ"}
+
+
+@pytest.mark.parametrize(
+    ("held", "fragment"),
+    [
+        ({"instrument": _STOCK, "quantity": 1}, "held_hedges must be a list"),
+        ([{"instrument": _STOCK}], "held_hedges[0]: position: missing field(s) ['quantity']"),
+        ([{"instrument": _STOCK, "quantity": 1.5}], "held_hedges[0]"),
+    ],
+    ids=["not-a-list", "missing-quantity", "fractional"],
+)
+def test_bad_held_hedges_are_a_422(client, held, fragment):
+    request = quick_request()
+    request["held_hedges"] = held
+    response = client.post("/v1/hedge", headers=ALICE, json=request)
+    assert response.status_code == 422
+    assert fragment in response.text

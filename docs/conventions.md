@@ -103,6 +103,7 @@ Two position terms, off by default, address it:
   Held hedge options that are not candidates count against it as they stand, so a cap below them is infeasible and is reported as over the limit by that much.
 
 Both act on the problem's `held_hedges`, the hedger's own positions, which the book also holds, plus the trade.
+A hedge request lists them in `held_hedges`, apart from the client's `book`, and the problem holds both: the Greeks, scenarios, and verification see the whole position.
 They never act on the rest of the book, the client's: a hedge that offsets a client position does not close it, so the two are not netted.
 With no `held_hedges`, as in a one-off request, they act on the trade alone: the exit doubles the cost of what is opened, and the cap limits it.
 The exit cost on held hedges that do not trade is a constant, so it shifts the objective and dilutes the relative MIP gap, but it does not change the hedge.
