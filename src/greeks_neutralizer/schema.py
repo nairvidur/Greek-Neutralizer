@@ -361,13 +361,17 @@ def parse_hedge_request(
     data: Any, gate_defaults: HedgeConfig | None = None
 ) -> tuple[HedgeProblem, MarketSnapshot, bool]:
     """`gate_defaults` is what a gate left out of the request takes: a service's limits, or the
-    library defaults if omitted."""
+    library defaults if omitted.
+
+    `held_hedges` are the hedger's own positions, listed apart from the client's `book`. The problem
+    holds both, and the position terms act on the held hedges and the trade only.
+    """
     d = _require(data, "request")
     check_fields(
         d,
         "request",
         {"book", "candidates", "targets", "market"},
-        {"scenarios", "config", "run_stability", "schema_version"},
+        {"held_hedges", "scenarios", "config", "run_stability", "schema_version"},
     )
     version = d.get("schema_version", SCHEMA_VERSION)
     if version != SCHEMA_VERSION:
@@ -375,12 +379,14 @@ def parse_hedge_request(
     run_stability = d.get("run_stability", False)
     if not isinstance(run_stability, bool):
         raise ValidationError(f"run_stability must be true or false, got {run_stability!r}")
+    held_hedges = _list_of(d.get("held_hedges", ()), "held_hedges", parse_position)
     problem = HedgeProblem(
-        book=parse_book(d["book"]),
+        book=(*parse_book(d["book"]), *held_hedges),
         candidates=_list_of(d["candidates"], "candidates", parse_candidate),
         targets=_list_of(d["targets"], "targets", parse_target),
         scenarios=_parse_scenarios(d.get("scenarios", ())),
         config=_parse_config(d.get("config", {}), gate_defaults or HedgeConfig()),
+        held_hedges=held_hedges,
     )
     return problem, parse_market(d["market"]), run_stability
 
