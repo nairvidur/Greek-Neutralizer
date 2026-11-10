@@ -380,12 +380,20 @@ def parse_hedge_request(
     if not isinstance(run_stability, bool):
         raise ValidationError(f"run_stability must be true or false, got {run_stability!r}")
     held_hedges = _list_of(d.get("held_hedges", ()), "held_hedges", parse_position)
+    config = _parse_config(d.get("config", {}), gate_defaults or HedgeConfig())
+    position_terms = config.price_exit or config.max_gross_option_contracts is not None
+    if position_terms and "held_hedges" not in d:
+        # Left out, the terms would act on the trade alone and quietly ignore every held hedge.
+        raise ValidationError(
+            "price_exit and max_gross_option_contracts act on the hedger's held hedges and the "
+            "trade: list them in held_hedges, [] if none"
+        )
     problem = HedgeProblem(
         book=(*parse_book(d["book"]), *held_hedges),
         candidates=_list_of(d["candidates"], "candidates", parse_candidate),
         targets=_list_of(d["targets"], "targets", parse_target),
         scenarios=_parse_scenarios(d.get("scenarios", ())),
-        config=_parse_config(d.get("config", {}), gate_defaults or HedgeConfig()),
+        config=config,
         held_hedges=held_hedges,
     )
     return problem, parse_market(d["market"]), run_stability

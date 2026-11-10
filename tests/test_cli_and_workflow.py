@@ -460,6 +460,29 @@ def test_request_can_turn_on_the_position_terms():
     request = example_request()
     assert parse_hedge_request(request)[0].config.price_exit is False
     request["config"].update(price_exit=True, max_gross_option_contracts=40)
+    request["held_hedges"] = []
     config = parse_hedge_request(request)[0].config
     assert config.price_exit is True
     assert config.max_gross_option_contracts == 40
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [{"price_exit": True}, {"max_gross_option_contracts": 40}],
+    ids=["price-exit", "gross-cap"],
+)
+def test_position_terms_need_the_held_hedges_named(terms):
+    """Left out, the terms would see the trade alone and quietly ignore every hedge already held,
+    so a request that turns them on must list its held hedges, [] when it holds none."""
+    request = example_request()
+    request["config"].update(terms)
+    with pytest.raises(ValidationError, match=r"held_hedges.*\[\] if none"):
+        parse_hedge_request(request)
+    request["held_hedges"] = []
+    assert parse_hedge_request(request)[0].held_hedges == ()
+
+
+def test_position_terms_switched_off_need_no_held_hedges():
+    request = example_request()
+    request["config"].update(price_exit=False)
+    assert parse_hedge_request(request)[0].held_hedges == ()

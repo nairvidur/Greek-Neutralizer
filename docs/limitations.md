@@ -11,8 +11,8 @@ This is alpha software, and **it has not been used to hedge real money.**
   Use those settings for any repeated re-hedge, and treat it as a paper-pilot candidate, not a default.
   Most marks in these runs came from the calibrated surface, because the free source rarely quotes the same contract twice, and the audit of those marks is in `docs/evidence/phase4/`.
 - **The position terms need the hedger's holdings, and nothing here tracks them.** `price_exit` and `max_gross_option_contracts` act on the held hedges and the trade.
-  A request names its held hedges in `held_hedges`, apart from the client's `book`.
-  The service keeps no positions, so a caller that leaves them out, or sends stale ones, gets terms on the new trade alone, and nothing flags it.
+  A request that turns either on must list its held hedges in `held_hedges`, apart from the client's `book`, and `[]` if it holds none, so leaving them out is an error rather than a silent trade-only hedge.
+  The service keeps no positions, so it cannot tell when the list is stale or incomplete.
 - **No live or paper pilot, and no reconciliation to broker or clearing statements.**
 - **No independent validation.** Every review here was automated, and only one day's real chain has been reconciled.
 
