@@ -115,11 +115,13 @@ Each claim links to what backs it, and to what it does not establish.
 | Option-hedge optimizer on free historical chains, 2020 to 2026: **no-go** as first configured; the position-aware fix is a **go** on held-out DIA, **not confirmed** on XLF | `docs/evidence/phase4/` |
 | Performance against provisional budgets | `docs/evidence/performance/` |
 | The web workflow works in a real browser | `docs/evidence/phase5/` |
+| Forward paper pilot on free chains: registered, no readout yet | `docs/evidence/phase6/` |
 
 **On historical option chains, its hedge optimizer as first configured did worse than daily delta hedging.**
 It priced each trade but not the position left, so it stacked offsetting legs.
 With exits priced and gross contracts capped, it cut a short strangle's variance against daily delta by 43% to 61% on DIA, a held-out symbol, at a cost of most of the strangle's carry, and XLF did not confirm the tail improvement.
 Daily delta stays the recommended default; the fixed optimizer is a candidate for a paper pilot.
+A forward paper pilot on free chains, scoring only days after 2026-11-10, is registered in `docs/evidence/phase6/` and decides in 2028.
 
 ## Docs
 

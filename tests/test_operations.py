@@ -266,3 +266,93 @@ def test_chain_fetch_over_a_holiday_finishes_and_does_not_retry_it(
     broken.add("2020-04-13")
     assert run("2020-04-13", "2020-04-13") == 1
     assert not any(folder.glob("2020-04-13*"))
+
+
+def test_chain_fetch_reprobes_recent_days_the_source_may_not_have_published(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Oracle: DoltHub posts a day's chain and close after that day, so a forward fetch can probe
+    a day before it exists. A marker then would keep the day out forever, a silent gap in the
+    pilot. Inside the settle window a missing chain or close is left unmarked and probed again;
+    past it the old behavior holds, since the source does skip days for good."""
+    fetch = _script(monkeypatch, "fetch_dolthub_chains")
+    published: dict[str, set[str]] = {fetch.OPTIONS: {"2026-10-26"}, fetch.STOCKS: {"2026-10-26"}}
+
+    def query(repo: str, sql: str, **_: object) -> list[dict[str, str | None]]:
+        if "dividend" in sql:
+            return []
+        day = sql.split("date = '")[1][:10]
+        if day not in published[repo]:
+            return []
+        if repo == fetch.OPTIONS:
+            return [
+                {
+                    "date": day,
+                    "expiration": "2026-12-18",
+                    "strike": "470",
+                    "call_put": "Call",
+                    "bid": "1",
+                    "ask": "2",
+                    "vol": "0.2",
+                    "delta": "0.5",
+                    "gamma": "0.01",
+                }
+            ]
+        return [{"close": "470"}]
+
+    monkeypatch.setattr(fetch, "query", query)
+    folder = tmp_path / "chains" / "DIA"
+
+    def run(as_of: str) -> list[str]:
+        argv = [
+            "fetch",
+            str(tmp_path),
+            "--symbol",
+            "DIA",
+            "--start",
+            "2026-10-26",
+            "--end",
+            "2026-11-09",
+            "--as-of",
+            as_of,
+            "--weekdays",
+            "0",
+            "--workers",
+            "1",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        fetch.main()
+        return sorted(p.name for p in folder.iterdir())
+
+    # Probed on 2026-11-09: 11-02 and 11-09 are within the 7-day window, so unmarked. The source
+    # has a chain for 11-02 but no close yet, which is not marked either.
+    published[fetch.OPTIONS].add("2026-11-02")
+    assert run("2026-11-09") == ["2026-10-26.csv"]
+    # A week later both are published and fetched.
+    published[fetch.OPTIONS].add("2026-11-09")
+    published[fetch.STOCKS].update({"2026-11-02", "2026-11-09"})
+    assert run("2026-11-17") == ["2026-10-26.csv", "2026-11-02.csv", "2026-11-09.csv"]
+
+
+def test_chain_fetch_still_marks_days_past_the_settle_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fetch = _script(monkeypatch, "fetch_dolthub_chains")
+    monkeypatch.setattr(fetch, "query", lambda repo, sql, **_: [])
+    argv = [
+        "fetch",
+        str(tmp_path),
+        "--symbol",
+        "DIA",
+        "--start",
+        "2026-11-02",
+        "--end",
+        "2026-11-02",
+        "--as-of",
+        "2026-11-10",
+        "--settle-days",
+        "5",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    fetch.main()
+    assert [p.name for p in (tmp_path / "chains" / "DIA").iterdir()] == ["2026-11-02.none"]

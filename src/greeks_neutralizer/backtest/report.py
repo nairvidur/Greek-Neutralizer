@@ -21,7 +21,8 @@ class PolicyStats:
     total_pnl: float
     daily_stdev: float
     worst_day: float
-    es_975: float
+    # None below ES_975_MIN_DAYS, too few for one day in the 2.5% tail, as in an interim readout.
+    es_975: float | None
     max_drawdown: float
     hedge_cost: float
     book_cost: float
@@ -37,6 +38,9 @@ def max_drawdown(pnl: FloatArray) -> float:
     return float(np.max(np.maximum.accumulate(np.maximum(equity, 0.0)) - equity))
 
 
+ES_975_MIN_DAYS = 40
+
+
 def policy_stats(result: BacktestResult) -> PolicyStats:
     pnl = result.pnl()
     if pnl.size == 0:
@@ -47,7 +51,7 @@ def policy_stats(result: BacktestResult) -> PolicyStats:
         total_pnl=float(pnl.sum()),
         daily_stdev=float(pnl.std(ddof=1)),
         worst_day=float(np.min(pnl)),
-        es_975=expected_shortfall(pnl, 0.975),
+        es_975=expected_shortfall(pnl, 0.975) if pnl.size >= ES_975_MIN_DAYS else None,
         max_drawdown=max_drawdown(pnl),
         hedge_cost=sum(d.hedge_cost for d in result.days),
         book_cost=sum(d.book_cost for d in result.days),

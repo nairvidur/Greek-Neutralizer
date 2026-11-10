@@ -2,7 +2,7 @@
 """Run the pre-registered backtest on historical option chains. Every variant is reported.
 
 Usage: run_chain_backtest.py <chain_dir> <dividends.csv> <DGS3MO.csv> --out results.json
-       [--symbol SPY]
+       [--symbol SPY] [--start YYYY-MM-DD]
 
 <chain_dir> holds one <date>.csv per day from scripts/fetch_dolthub_chains.py, and DGS3MO.csv is
 FRED's 3-month Treasury series. The books, policies, and spread multiples are the proxy's
@@ -15,12 +15,17 @@ Option bid and ask are real, so a spread multiple of 1 is the quoted spread, and
 The position-aware optimizer variants were added after the SPY no-go and designed on SPY, so their
 SPY results are in-sample. Their test is on DIA and XLF, held out until the variants were entered
 in the ledger. Every symbol uses the same book sizes and settings.
+
+`--start` drops chain days before a date, which is how the forward pilot in
+docs/evidence/phase6/ scores only days that did not exist when it was registered. A run too short
+for the block bootstrap reports its statistics without intervals, rather than failing.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import multiprocessing as mp
 import time
@@ -139,6 +144,43 @@ def continuous_history(files: Sequence[Path], max_gap_days: int = MAX_GAP_DAYS) 
         if (days[i] - days[i - 1]).days > max_gap_days:
             start = i
     return start
+
+
+def select_history(files: Sequence[Path], start: date | None) -> tuple[list[Path], list[Path]]:
+    """The chain files scored, and those dropped by the gap rule. Days before `start` are not
+    data for this run at all, so the gap rule sees only the rest."""
+    kept = [p for p in files if start is None or date.fromisoformat(p.stem) >= start]
+    first = continuous_history(kept)
+    return kept[first:], kept[:first]
+
+
+def inputs_digest(paths: Sequence[Path]) -> str:
+    """SHA-256 over every input file's name and bytes, in name order. The free sources revise
+    their data, so a readout records exactly what it read."""
+    digest = hashlib.sha256()
+    for path in sorted(paths, key=lambda p: (p.name, str(p))):
+        digest.update(path.name.encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def comparisons_for(
+    results: dict[str, BacktestResult], block: int
+) -> tuple[list[dict[str, object]], str | None]:
+    """Each policy against unhedged and daily delta, or none, with the reason, while the run is
+    shorter than the block bootstrap needs."""
+    periods = min(r.pnl().size for r in results.values())
+    if periods < 2 * block:
+        return [], (
+            f"{periods} periods, fewer than the {2 * block} the block bootstrap needs, so no "
+            "comparison or interval is reported yet"
+        )
+    return [
+        compare(results[name], results[baseline], block=block).as_dict()
+        for baseline in ("unhedged", "delta_daily")
+        for name in sorted(results)
+        if name != baseline and baseline in results
+    ], None
 
 
 def _run(args: tuple[Variant, Inputs]) -> Outcome:
@@ -265,6 +307,11 @@ def main() -> None:
     parser.add_argument("--processes", type=int, default=8)
     parser.add_argument("--symbol", default=DEFAULT_SYMBOL)
     parser.add_argument(
+        "--start",
+        type=date.fromisoformat,
+        help="score only chain days on or after this date, as the forward pilot does",
+    )
+    parser.add_argument(
         "--series",
         type=Path,
         help="Also write each variant's per-period results to this directory, as CSV",
@@ -280,16 +327,15 @@ def main() -> None:
     every = tuple(sorted(args.chains.glob("*.csv")))
     if not every:
         raise SystemExit(f"no chain files in {args.chains}")
-    start = continuous_history(every)
-    files = every[start:]
-    if len(files) < 2:
-        raise SystemExit(f"no continuous chain history in {args.chains}")
+    files, dropped = select_history(every, args.start)
+    if len(files) < 3:
+        raise SystemExit(f"fewer than two periods of continuous chain history in {args.chains}")
     inputs = Inputs(
-        args.symbol, files, load_fred_series(args.rates), load_dividends(args.dividends)
+        args.symbol, tuple(files), load_fred_series(args.rates), load_dividends(args.dividends)
     )
     print(
         f"{args.symbol}: {len(files)} chain days, {files[0].stem} to {files[-1].stem}, "
-        f"{start} leading days dropped",
+        f"{len(dropped)} leading days dropped",
         flush=True,
     )
 
@@ -334,10 +380,12 @@ def main() -> None:
         "source": "DoltHub post-no-preference/options and post-no-preference/stocks; FRED DGS3MO",
         "code_version": __version__,
         "symbol": args.symbol,
+        "start": args.start.isoformat() if args.start else None,
+        "inputs_sha256": inputs_digest([*files, args.dividends, args.rates]),
         "chain_days": [files[0].stem, files[-1].stem, len(files)],
         "dropped_leading_days": {
             "rule": f"history starts after the last gap over {MAX_GAP_DAYS} calendar days",
-            "days": [p.stem for p in every[:start]],
+            "days": [p.stem for p in dropped],
         },
         "skipped_days": len(skipped),
         "skipped_by_reason": dict(sorted(reasons.items())),
@@ -368,12 +416,7 @@ def main() -> None:
         # Sorted, because workers finish in any order and the file should not depend on it.
         ordered = dict(sorted(by_policy.items()))
         trimmed = {name: o.result.after_warmup(WARMUP_DAYS) for name, o in ordered.items()}
-        comparisons = [
-            compare(trimmed[name], trimmed[baseline], block=BOOTSTRAP_BLOCK).as_dict()
-            for baseline in ("unhedged", "delta_daily")
-            for name in sorted(trimmed)
-            if name != baseline and baseline in trimmed
-        ]
+        comparisons, comparisons_note = comparisons_for(trimmed, BOOTSTRAP_BLOCK)
         output["groups"].append(  # type: ignore[attr-defined]
             {
                 "book": book,
@@ -399,6 +442,7 @@ def main() -> None:
                     if name != "delta_daily" and "delta_daily" in trimmed
                 },
                 "comparisons": comparisons,
+                "comparisons_note": comparisons_note,
                 "stress_days": [
                     {"day": s.day, "pnl": s.pnl_by_policy}
                     for s in stress_days(list(trimmed.values()), STRESS_DAYS)

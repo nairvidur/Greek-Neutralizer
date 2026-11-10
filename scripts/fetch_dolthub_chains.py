@@ -2,7 +2,8 @@
 """Download free historical option chains, closes, and dividends from DoltHub.
 
 Usage: fetch_dolthub_chains.py <out_dir> [--symbol SPY] [--start 2019-01-01] [--end 2026-12-31]
-                               [--weekdays 0,1,2,3,4] [--workers 8]
+                               [--weekdays 0,1,2,3,4] [--workers 8] [--as-of today]
+                               [--settle-days 7]
 
 Source: the public DoltHub databases post-no-preference/options (end-of-day option bid/ask,
 about four expirations near the money, mostly three days a week from 2019 and more often later)
@@ -20,6 +21,8 @@ empty <date>.noclose marker: the options table has chains on some market holiday
 Such a day is kept out of the data, since the reader would have no spot check, and is listed
 rather than counted as a failure. Existing day files and markers are kept, so an interrupted run
 resumes; only transport or API errors fail the run and are retried by rerunning.
+The source posts a day after it ends, so a day within --settle-days of --as-of that has no chain
+or no close may only be unpublished: it gets no marker and is probed again by the next run.
 Each file is written to a temporary name and renamed, so a partial file never looks complete.
 Keep the output outside version control, like all vendor data here.
 """
@@ -45,6 +48,8 @@ CHAIN_COLUMNS = ("date", "expiration", "strike", "call_put", "bid", "ask", "vol"
 DAY_COLUMNS = (*CHAIN_COLUMNS, "underlying_close")
 # A day's chain is about 200 rows. A response this large may have been cut at the API's cap.
 _ROW_CAP = 1000
+# fetch_day's result for a recent day the source may not have published yet: nothing is written.
+PENDING = -1
 
 
 class FetchError(RuntimeError):
@@ -100,9 +105,13 @@ def weekdays(start: date, end: date, weekday_set: frozenset[int]) -> list[date]:
 MARKERS = (".none", ".noclose")
 
 
-def fetch_day(symbol: str, day: date, target: Path) -> int | None:
+def fetch_day(symbol: str, day: date, target: Path, *, settled: bool = True) -> int | None:
     """Rows written for the day; 0 with an empty `.none` marker when it has no chain; None with
-    an empty `.noclose` marker when it has a chain but the stocks table has no close for it."""
+    an empty `.noclose` marker when it has a chain but the stocks table has no close for it.
+
+    A day that is not `settled` may be unpublished rather than missing, so either gap returns
+    PENDING and writes nothing, and the next run probes the day again.
+    """
     rows = query(
         OPTIONS,
         f"SELECT {', '.join(CHAIN_COLUMNS)} FROM option_chain "
@@ -110,6 +119,8 @@ def fetch_day(symbol: str, day: date, target: Path) -> int | None:
         "ORDER BY expiration, strike, call_put",
     )
     if not rows:
+        if not settled:
+            return PENDING
         target.with_suffix(".none").touch()
         return 0
     if len(rows) >= _ROW_CAP:
@@ -118,6 +129,8 @@ def fetch_day(symbol: str, day: date, target: Path) -> int | None:
         STOCKS, f"SELECT close FROM ohlcv WHERE date = '{day}' AND act_symbol = '{symbol}'"
     )
     if len(closes) != 1 or closes[0].get("close") in (None, ""):
+        if not settled:
+            return PENDING
         # Kept out rather than written without a close: the reader would have no spot check.
         target.with_suffix(".noclose").touch()
         return None
@@ -131,7 +144,20 @@ def main() -> None:
     parser.add_argument("out", type=Path)
     parser.add_argument("--symbol", default="SPY")
     parser.add_argument("--start", type=date.fromisoformat, default=date(2019, 1, 1))
-    parser.add_argument("--end", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--end", type=date.fromisoformat, default=None, help="default: --as-of")
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=date.today(),
+        help="the day the run stands on, today unless replaying; sets the settle window",
+    )
+    parser.add_argument(
+        "--settle-days",
+        type=int,
+        default=7,
+        help="days within this many of --as-of with no chain or close are not marked, since the "
+        "source may not have posted them yet",
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
         "--weekdays",
@@ -153,8 +179,11 @@ def main() -> None:
     _write_atomic(args.out / f"{symbol}_dividends.csv", ("ex_date", "amount"), dividends)
     print(f"{symbol}: {len(dividends)} dividends", flush=True)
 
+    if args.settle_days < 0:
+        raise SystemExit("--settle-days must be zero or more")
+    end = args.end if args.end is not None else args.as_of
     weekday_set = frozenset(int(x) for x in args.weekdays.split(","))
-    days = weekdays(args.start, args.end, weekday_set)
+    days = weekdays(args.start, end, weekday_set)
     folder = args.out / "chains" / symbol
     folder.mkdir(parents=True, exist_ok=True)
     todo = [
@@ -166,9 +195,19 @@ def main() -> None:
     print(f"{symbol}: {len(days)} candidate days, {len(todo)} to probe", flush=True)
     found = 0
     no_close: list[date] = []
+    pending: list[date] = []
     failures: list[str] = []
     with ThreadPoolExecutor(max_workers=max(args.workers, 1)) as pool:
-        futures = {d: pool.submit(fetch_day, symbol, d, folder / f"{d}.csv") for d in todo}
+        futures = {
+            d: pool.submit(
+                fetch_day,
+                symbol,
+                d,
+                folder / f"{d}.csv",
+                settled=(args.as_of - d).days > args.settle_days,
+            )
+            for d in todo
+        }
         for index, (day, future) in enumerate(futures.items(), 1):
             try:
                 count = future.result()
@@ -177,6 +216,8 @@ def main() -> None:
                 continue
             if count is None:
                 no_close.append(day)
+            elif count == PENDING:
+                pending.append(day)
             else:
                 found += count > 0
             if index % 50 == 0 or index == len(todo):
@@ -184,6 +225,9 @@ def main() -> None:
     if no_close:
         listed = ", ".join(str(d) for d in no_close)
         print(f"{len(no_close)} chain days have no close and are kept out: {listed}", flush=True)
+    if pending:
+        listed = ", ".join(str(d) for d in pending)
+        print(f"{len(pending)} recent days are not posted yet and will be probed again: {listed}")
     if failures:
         print(f"{len(failures)} days failed; rerun to retry them:", file=sys.stderr)
         for line in failures[:20]:
