@@ -294,6 +294,7 @@ def _held_put_request(*, as_held: bool):
         request["held_hedges"] = held
     else:
         request["book"] = [*request["book"], *held]
+        request["held_hedges"] = []
     request["config"].update(max_gross_option_contracts=0)
     return request, put
 
