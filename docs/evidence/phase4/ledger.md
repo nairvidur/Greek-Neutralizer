@@ -197,3 +197,4 @@ Nothing here is promoted to a recommended default.
 The chain run gave no-go, so promotion now needs a fixed policy, entered here as a new pre-registered variant before it runs, then a paper pilot.
 The position-aware variants above are that entry: a go on the held-out test makes one eligible for a paper pilot, not a default.
 All three are eligible, unconfirmed on XLF, and the pilot should run them side by side, since these data do not separate them.
+The forward paper pilot that does so on free chains is registered in `docs/evidence/phase6/`.

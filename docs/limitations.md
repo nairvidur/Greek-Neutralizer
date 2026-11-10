@@ -13,7 +13,7 @@ This is alpha software, and **it has not been used to hedge real money.**
 - **The position terms need the hedger's holdings, and nothing here tracks them.** `price_exit` and `max_gross_option_contracts` act on the held hedges and the trade.
   A request that turns either on must list its held hedges in `held_hedges`, apart from the client's `book`, and `[]` if it holds none, so leaving them out is an error rather than a silent trade-only hedge.
   The service keeps no positions, so it cannot tell when the list is stale or incomplete.
-- **No live or paper pilot, and no reconciliation to broker or clearing statements.**
+- **No live pilot, and no reconciliation to broker or clearing statements.** A forward paper pilot on free chains is registered in `docs/evidence/phase6/`, and decides nothing before 2028-11-11.
 - **No independent validation.** Every review here was automated, and only one day's real chain has been reconciled.
 
 ## Models

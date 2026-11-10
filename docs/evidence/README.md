@@ -10,7 +10,7 @@ A gate met only by proxy is reported as open.
 | 3. Optimizer and risk | Independent verification, and stress reviewed | **Met**, with limitations | `phase3/` |
 | 4. Evidence | Out-of-sample report on chains, net of costs | **Met on free chains.** No-go for the optimizer as first configured; its position-aware fix is a go on held-out DIA, not confirmed on XLF, at a measured cost in carry; daily delta stays the default | `phase4/` |
 | 5. Product | Browser workflow, load test, restore drill, threat model | **Met on one machine**, not on a real deployment | `phase5/` |
-| 6. Pilot | Shadow mode, independent validation, pen test | **Not started:** needs people and partners | |
+| 6. Pilot | Shadow mode, independent validation, pen test | **Started in part:** a forward paper pilot on free chains is registered, with no readout yet; the shadow pilot, validation, and pen test need people and partners | `phase6/` |
 | 7. Expansion | Futures options, FX, rates, commodities, crypto | **Not started** | |
 
 Phase 5 went ahead with phase 4 open, because that gate then seemed to need purchased data, and building a workflow risks no money.

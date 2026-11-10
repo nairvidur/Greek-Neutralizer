@@ -50,7 +50,7 @@ See `docs/evidence/`.
 
 - Backtesting on a licensed chain with every listed strike. The free chain used for phase 4 rarely quotes the same contract twice, so most marks there came from the model.
 - Reconciliation to broker or clearing statements.
-- Any live or paper pilot.
+- Any live pilot, or a paper pilot with a readout: the forward paper pilot in `docs/evidence/phase6/` was registered on 2026-11-10 and decides in 2028.
 - Independent validation.
 - Long-run monitoring of surface fit, or of hedge effectiveness.
 
