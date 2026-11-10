@@ -35,7 +35,11 @@ A change needs a dated entry in the ledger below, made before the readout it aff
 - Stopping early, only for a defect: failed or time-limited days, a data problem, or a code fault.
   The defect, its fix, and whether the pilot restarts go in the ledger.
 - Code: readouts run the code as registered.
-  If anything under `src/greeks_neutralizer/` or `scripts/run_chain_backtest.py` that the backtest uses has changed since the commit that added this file, the readout reports results both at that commit and at the current code, and the decision uses the registered code unless a ledger entry says why not.
+  The registered code is the merge commit of the pull request that adds this file into main, entered in the ledger right after the merge.
+  Commits made on that pull request before its merge are part of the registration, not later changes.
+  If anything under `src/greeks_neutralizer/` or `scripts/run_chain_backtest.py` that the backtest uses has changed since the registered commit, the readout reports results both at that commit and at the current code, and the decision uses the registered code unless a ledger entry says why not.
+  Each readout records `git_commit` and `git_dirty`, the commit it ran on and whether tracked files under `src/` or `scripts/` differed from it.
+  A readout from a dirty tree is not a pilot result.
 - Data: each readout records `inputs_sha256` over every file it read, because the free sources revise their data.
   The downloaded files are vendor data and stay out of version control; keep them for the pilot's length.
 
@@ -73,3 +77,4 @@ Commit each readout's results file, with an entry below.
 - 2026-11-10: protocol registered.
   Before registering, the runner gained `--start`, a digest of its inputs, and readouts of runs too short for intervals or ES, and the fetch gained the settle window above.
   They were checked on DIA chains from 2026-10-01 to 2026-10-30, which are before the start and are not pilot data.
+  The registered commit is entered here after the merge.

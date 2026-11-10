@@ -28,6 +28,7 @@ import csv
 import hashlib
 import json
 import multiprocessing as mp
+import subprocess
 import time
 from collections import Counter
 from collections.abc import Sequence
@@ -162,6 +163,23 @@ def inputs_digest(paths: Sequence[Path]) -> str:
         digest.update(path.name.encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def code_identity(folder: Path) -> tuple[str | None, bool | None]:
+    """The commit checked out where `folder` lives, and whether tracked files under src/ or
+    scripts/ differ from it. Both are None without git or outside a git checkout."""
+
+    def git(*argv: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(folder), *argv], capture_output=True, text=True, check=True
+        ).stdout
+
+    try:
+        commit = git("rev-parse", "HEAD").strip()
+        changes = git("status", "--porcelain", "--untracked-files=no", "--", ":/src", ":/scripts")
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    return commit, bool(changes.strip())
 
 
 def comparisons_for(
@@ -366,6 +384,7 @@ def main() -> None:
     }
     gaps = np.abs(np.array(outcomes[0].close_gaps))
 
+    git_commit, git_dirty = code_identity(Path(__file__).resolve().parent)
     groups: dict[tuple[str, float], dict[str, Outcome]] = {}
     for outcome in outcomes:
         key = (outcome.variant.book, outcome.variant.spread_multiple)
@@ -379,6 +398,8 @@ def main() -> None:
         ),
         "source": "DoltHub post-no-preference/options and post-no-preference/stocks; FRED DGS3MO",
         "code_version": __version__,
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "symbol": args.symbol,
         "start": args.start.isoformat() if args.start else None,
         "inputs_sha256": inputs_digest([*files, args.dividends, args.rates]),

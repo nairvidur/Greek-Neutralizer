@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import os
+import shutil
+import subprocess
 from datetime import date
 from pathlib import Path
 from types import ModuleType
@@ -126,3 +129,46 @@ def test_stats_on_a_short_run_leave_out_only_the_tail_measure():
     assert short.worst_day == -10.0
     # 40 samples: the tail is the single worst, a loss of 20.
     assert policy_stats(_fake("x", np.arange(40.0) - 20.0)).es_975 == 20.0
+
+
+def _isolated_git(monkeypatch: pytest.MonkeyPatch, ceiling: Path) -> None:
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(ceiling))
+
+
+def _git(repo: Path, *argv: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *argv], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_code_identity_names_the_checked_out_commit_and_tracks_code_edits(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch)
+    _isolated_git(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "run.py").write_text("x = 1\n")
+    (repo / "notes.md").write_text("notes\n")
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "c")
+
+    assert runner.code_identity(repo / "scripts") == (_git(repo, "rev-parse", "HEAD"), False)
+    # Neither untracked files nor edits outside src/ and scripts/ change the code that ran.
+    (repo / "scripts" / "scratch.py").write_text("y = 2\n")
+    (repo / "notes.md").write_text("edited\n")
+    assert runner.code_identity(repo / "scripts")[1] is False
+    (repo / "scripts" / "run.py").write_text("x = 2\n")
+    assert runner.code_identity(repo / "scripts") == (_git(repo, "rev-parse", "HEAD"), True)
+
+
+def test_code_identity_outside_a_git_checkout_is_unknown(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch)
+    _isolated_git(monkeypatch, tmp_path)
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    assert runner.code_identity(folder) == (None, None)
